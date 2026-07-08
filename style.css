@@ -128,8 +128,41 @@ textarea#caption:focus{outline:none;border-color:var(--brand)}
 .platformcard .pcaption:focus{outline:none;border-color:var(--brand)}
 .platformcard .pcaption::placeholder{color:var(--faint)}
 .platformcard .prow{display:flex;gap:8px}
+.platformcard .prow+.prow{margin-top:8px}
 .platformcard a.btn, .platformcard button.btn{flex:1;text-align:center;text-decoration:none;
   font-size:11px;padding:8px 10px}
+.platformcard .statusrow .btn{font-size:10.5px;padding:6px 8px;flex:1}
+
+/* posting status */
+.platformcard{border-left:3px solid transparent;transition:border-color .15s,opacity .15s}
+.platformcard.status-copied{border-left-color:var(--muted)}
+.platformcard.status-opened{border-left-color:var(--brand)}
+.platformcard.status-posted{border-left-color:var(--pos)}
+.platformcard.status-skipped{opacity:.6}
+.statuschip{margin-left:auto;font-family:var(--mono);font-size:9.5px;font-weight:600;
+  letter-spacing:.06em;text-transform:uppercase;border-radius:20px;padding:2px 8px;
+  background:var(--ground);color:var(--faint);border:1px solid var(--border);white-space:nowrap}
+.statuschip[data-status="copied"]{color:var(--muted)}
+.statuschip[data-status="opened"]{color:var(--brand);border-color:var(--brand-ghost)}
+.statuschip[data-status="posted"]{color:var(--pos);border-color:var(--pos-ghost);background:var(--pos-ghost)}
+.statuschip[data-status="skipped"]{color:var(--faint)}
+.platformcard .posturl{width:100%;margin-top:8px;background:var(--ground);border:1px solid var(--border);
+  border-radius:8px;padding:7px 10px;color:var(--ink);font-family:var(--mono);font-size:11px}
+.platformcard .posturl:focus{outline:none;border-color:var(--brand)}
+.platformcard .posturl::placeholder{color:var(--faint)}
+
+/* session bar */
+.sessionbar{display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+  background:var(--surface2);border:1px solid var(--border);border-radius:12px;
+  padding:12px 16px;margin-bottom:16px}
+.sessionmeta{display:flex;flex-direction:column;gap:1px}
+.sessiontitle{font-weight:700;font-size:13px}
+.sessionsub{font-family:var(--mono);font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
+.sessionprogress{--pct:0%;flex:1;min-width:120px;height:6px;border-radius:4px;background:var(--ground);
+  overflow:hidden;position:relative}
+.sessionprogress::after{content:"";position:absolute;inset:0;width:var(--pct);
+  background:var(--pos);transition:width .25s}
+.sessionbar .linkbtn{font-size:12px;white-space:nowrap}
 
 .hint{font-size:12px;color:var(--faint);line-height:1.55}
 .linkbtn{background:none;border:none;padding:0;color:var(--brand);font-family:var(--sans);

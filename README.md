@@ -12,6 +12,15 @@ Pinterest. Optionally reformat a clip to 9:16 first, entirely in your browser.
 1. **Caption once, post everywhere** — write a base caption, jump straight to each of the 8
    platforms' upload pages. This works with zero upload; it's the primary flow, not gated behind
    anything else.
+   - **Posting session tracker** — each platform shows a status (not started → caption copied →
+     upload opened → posted, or skipped), and the whole session — base caption, per-platform
+     captions, AI suggestions, status, and live post URLs — is saved to your browser so a refresh
+     or a closed tab doesn't lose it. A progress bar shows how many of the 8 you've actually posted.
+     This is what makes BLAST a tracker rather than a bookmark folder: even with all your upload
+     tabs already open, it's the one place that remembers where a clip has and hasn't gone.
+   - **Copy + open in one click** — the primary button on each platform copies that platform's
+     caption, opens its upload page, and marks it "opened" in a single action. "Copy only" and
+     manual "mark posted / skip" are there too. Pasting a live post URL auto-marks it posted.
 2. **Adapt for each platform** — one AI call rewrites your base caption per platform's real
    conventions (length, hashtag style, tone). Each platform gets its own editable result.
 3. **Suggest captions from video** — upload your edited clip and get AI-proposed captions instead

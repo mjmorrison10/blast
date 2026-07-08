@@ -44,6 +44,63 @@ var platformCaptions = {};
 // video", plus which option (if any) is currently picked for that platform.
 var platformSuggestions = {};
 var platformPickedIdx = {};
+// Per-platform posting status + the live URL after posting. This is what
+// makes BLAST a tracker, not just a link launcher — you can see at a glance
+// where a clip has and hasn't gone, even with all your tabs already open.
+// Status flow: none → copied → opened → posted (or skipped at any point).
+var platformStatus = {};   // name -> "none"|"copied"|"opened"|"posted"|"skipped"
+var platformPostUrl = {};  // name -> string
+var STATUS_ORDER = { none: 0, copied: 1, opened: 2, posted: 3, skipped: 3 };
+var STATUS_LABEL = { none: "Not started", copied: "Caption copied", opened: "Upload opened", posted: "Posted", skipped: "Skipped" };
+
+function statusOf(name) { return platformStatus[name] || "none"; }
+// Only advance status forward (copying after you've already posted shouldn't
+// knock it back to "copied"); posted/skipped are set explicitly, not bumped.
+function bumpStatus(name, next) {
+  var cur = statusOf(name);
+  if (STATUS_ORDER[next] > STATUS_ORDER[cur] && cur !== "posted" && cur !== "skipped") {
+    platformStatus[name] = next;
+  }
+}
+
+// === Session persistence (localStorage) ===
+// A refresh or a closed tab used to lose everything but the API key. Now the
+// whole working session — base caption, per-platform captions/suggestions/
+// picks, and posting status — survives, so BLAST feels like a workspace.
+var LS_SESSION = "blast_session_v1";
+function saveSession() {
+  try {
+    localStorage.setItem(LS_SESSION, JSON.stringify({
+      base: (document.querySelector("#caption") || {}).value || "",
+      captions: platformCaptions,
+      suggestions: platformSuggestions,
+      picked: platformPickedIdx,
+      status: platformStatus,
+      postUrl: platformPostUrl,
+      updatedAt: Date.now(),
+    }));
+  } catch (e) { /* quota — non-fatal, session just won't persist */ }
+}
+function loadSession() {
+  try {
+    var s = JSON.parse(localStorage.getItem(LS_SESSION));
+    if (!s) return;
+    platformCaptions = s.captions || {};
+    platformSuggestions = s.suggestions || {};
+    platformPickedIdx = s.picked || {};
+    platformStatus = s.status || {};
+    platformPostUrl = s.postUrl || {};
+    var cap = document.querySelector("#caption");
+    if (cap && typeof s.base === "string") cap.value = s.base;
+  } catch (e) { /* corrupt — start fresh */ }
+}
+function resetSession() {
+  platformCaptions = {}; platformSuggestions = {}; platformPickedIdx = {};
+  platformStatus = {}; platformPostUrl = {};
+  var cap = document.querySelector("#caption");
+  if (cap) cap.value = "";
+  try { localStorage.removeItem(LS_SESSION); } catch (e) {}
+}
 
 // Suggestion text comes from a model response — escape before it ever goes
 // into innerHTML, same as any other untrusted string.
@@ -53,12 +110,24 @@ function escHtml(s) {
   });
 }
 
+// Resolve the caption a platform will actually post: its own edited/adapted
+// caption if present, else the shared base caption.
+function captionFor(p, pcaptionEl) {
+  var own = pcaptionEl ? pcaptionEl.value : platformCaptions[p.name];
+  return ((own || "").trim() || ($("#caption").value || "")).trim();
+}
+
+function copyText(text) {
+  return navigator.clipboard.writeText(text);
+}
+
 function renderPlatforms() {
   var wrap = $("#platforms");
   wrap.innerHTML = "";
   PLATFORMS.forEach(function (p) {
     var card = document.createElement("div");
-    card.className = "platformcard";
+    var st = statusOf(p.name);
+    card.className = "platformcard status-" + st;
     var suggestions = platformSuggestions[p.name] || [];
     var pickedIdx = platformPickedIdx[p.name];
     var suggestionsHtml = suggestions.length
@@ -66,21 +135,32 @@ function renderPlatforms() {
           return '<button class="suggestchip' + (i === pickedIdx ? ' picked' : '') + '" type="button" data-idx="' + i + '">' + escHtml(s) + '</button>';
         }).join('') + '</div>'
       : '';
+    var openLabel = p.note ? 'app' : 'upload';
     card.innerHTML =
       '<div class="pname"><span class="picon">' + p.icon + '</span>' + p.name +
       (p.note ? ' <span style="color:var(--faint);font-weight:400;font-size:11px">(' + p.note + ')</span>' : '') +
+      '<span class="statuschip" data-status="' + st + '">' + STATUS_LABEL[st] + '</span>' +
       '</div>' +
       suggestionsHtml +
       '<textarea class="pcaption" placeholder="Same as base caption until you Adapt, or type your own">' + escHtml(platformCaptions[p.name] || "") + '</textarea>' +
       '<div class="prow">' +
-      '<button class="btn ghost copybtn" type="button">Copy caption</button>' +
-      '<a class="btn primary" href="' + p.url + '" target="_blank" rel="noopener">Open ' + (p.note ? 'app' : 'upload') + ' →</a>' +
-      '</div>';
+      '<button class="btn primary copyopenbtn" type="button">Copy + open ' + openLabel + ' →</button>' +
+      '<button class="btn ghost copybtn" type="button">Copy only</button>' +
+      '</div>' +
+      '<div class="prow statusrow">' +
+      '<button class="btn ghost markposted" type="button">✓ Mark posted</button>' +
+      '<button class="btn ghost markskip" type="button">Skip</button>' +
+      '</div>' +
+      '<input class="posturl" type="url" placeholder="Paste the live post URL (optional)" value="' + escHtml(platformPostUrl[p.name] || "") + '">';
+
     var pcaption = card.querySelector(".pcaption");
+    var posturl = card.querySelector(".posturl");
+
     pcaption.addEventListener("input", function () {
       platformCaptions[p.name] = pcaption.value;
       delete platformPickedIdx[p.name];
       card.querySelectorAll(".suggestchip").forEach(function (c) { c.classList.remove("picked"); });
+      saveSession();
     });
     card.querySelectorAll(".suggestchip").forEach(function (chip) {
       chip.addEventListener("click", function () {
@@ -90,21 +170,113 @@ function renderPlatforms() {
         pcaption.value = suggestions[idx];
         card.querySelectorAll(".suggestchip").forEach(function (c) { c.classList.remove("picked"); });
         chip.classList.add("picked");
+        saveSession();
       });
     });
+
+    // The command-center action: copy this platform's caption, open its
+    // upload page, and advance status to "opened" — one click for what used
+    // to be copy, switch tab, and remember-you-did-it.
+    card.querySelector(".copyopenbtn").addEventListener("click", function () {
+      var text = captionFor(p, pcaption);
+      if (!text) { toast("Write a caption first"); return; }
+      copyText(text).then(function () {
+        toast("Copied — opening " + p.name);
+      }).catch(function () {
+        toast("Couldn't copy — caption's still in the box");
+      });
+      window.open(p.url, "_blank", "noopener");
+      bumpStatus(p.name, "opened");
+      refreshStatus();
+      saveSession();
+    });
+
     card.querySelector(".copybtn").addEventListener("click", function () {
-      var text = (pcaption.value || "").trim() || $("#caption").value;
-      if (!text.trim()) { toast("Write a caption first"); return; }
-      navigator.clipboard.writeText(text).then(function () {
+      var text = captionFor(p, pcaption);
+      if (!text) { toast("Write a caption first"); return; }
+      copyText(text).then(function () {
         toast("Caption copied — paste it into " + p.name);
+        bumpStatus(p.name, "copied");
+        refreshStatus();
+        saveSession();
       }).catch(function () {
         toast("Couldn't copy — select and copy manually");
       });
     });
+
+    card.querySelector(".markposted").addEventListener("click", function () {
+      platformStatus[p.name] = statusOf(p.name) === "posted" ? "none" : "posted";
+      refreshStatus();
+      saveSession();
+    });
+    card.querySelector(".markskip").addEventListener("click", function () {
+      platformStatus[p.name] = statusOf(p.name) === "skipped" ? "none" : "skipped";
+      refreshStatus();
+      saveSession();
+    });
+    posturl.addEventListener("input", function () {
+      platformPostUrl[p.name] = posturl.value;
+      // Pasting a live URL is a strong signal it actually went up.
+      if (posturl.value.trim()) bumpStatus(p.name, "posted");
+      saveSession();
+    });
+    posturl.addEventListener("change", refreshStatus);
+
     wrap.appendChild(card);
   });
+  refreshStatus();
 }
+
+// Update just the status chips + card classes + session summary without
+// tearing down the whole grid (which would blur a field mid-edit).
+function refreshStatus() {
+  var cards = document.querySelectorAll("#platforms .platformcard");
+  var posted = 0, done = 0;
+  PLATFORMS.forEach(function (p, i) {
+    var st = statusOf(p.name);
+    var card = cards[i];
+    if (card) {
+      card.className = "platformcard status-" + st;
+      var chip = card.querySelector(".statuschip");
+      if (chip) { chip.textContent = STATUS_LABEL[st]; chip.setAttribute("data-status", st); }
+      var posted_btn = card.querySelector(".markposted");
+      if (posted_btn) posted_btn.textContent = st === "posted" ? "✓ Posted" : "✓ Mark posted";
+      var skip_btn = card.querySelector(".markskip");
+      if (skip_btn) skip_btn.textContent = st === "skipped" ? "Skipped" : "Skip";
+    }
+    if (st === "posted") posted++;
+    if (st === "posted" || st === "skipped") done++;
+  });
+  var sub = $("#sessionSub");
+  if (sub) {
+    sub.textContent = posted + " of " + PLATFORMS.length + " posted" +
+      (done > posted ? " · " + (done - posted) + " skipped" : "");
+  }
+  var bar = $("#sessionProgress");
+  if (bar) bar.style.setProperty("--pct", Math.round((done / PLATFORMS.length) * 100) + "%");
+}
+
+loadSession();
 renderPlatforms();
+
+var _resetBtn = $("#resetSession");
+if (_resetBtn) _resetBtn.addEventListener("click", function () {
+  if (!confirm("Reset this posting session? Captions, picks, and posting status will be cleared. (Your API key stays.)")) return;
+  resetSession();
+  renderPlatforms();
+  toast("Session reset");
+});
+
+// Persist the base caption as it's typed (debounced) so a refresh keeps it.
+(function () {
+  var cap = $("#caption");
+  if (!cap) return;
+  var t;
+  cap.addEventListener("input", function () {
+    clearTimeout(t);
+    t = setTimeout(saveSession, 300);
+  });
+})();
 
 // === Settings (BYO Gemini API key, same pattern as RECALL) ===
 var LS_SETTINGS = "blast_settings_v1";
@@ -278,6 +450,7 @@ $("#adaptBtn").addEventListener("click", async function () {
       }
     });
     renderPlatforms();
+    saveSession();
     label.textContent = "";
     toast("Captions adapted for every platform");
   } catch (err) {
@@ -356,6 +529,7 @@ $("#suggestBtn").addEventListener("click", async function () {
       }
     });
     renderPlatforms();
+    saveSession();
     label.textContent = "";
     toast("Caption suggestions ready — pick one per platform");
   } catch (err) {
