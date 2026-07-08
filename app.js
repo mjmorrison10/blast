@@ -1,3 +1,5 @@
+import { generateText, generateFromMedia, providerSupportsVideo } from "./llm.js";
+
 // === Theme (same pattern as RECALL) ===
 (function () {
   var saved = localStorage.getItem("blast-theme");
@@ -34,9 +36,22 @@ var PLATFORMS = [
   { icon: "📌", name: "Pinterest", url: "https://www.pinterest.com/pin-builder/" },
 ];
 
-// Per-platform caption overrides, filled in by "Adapt for each platform" (or
-// left blank to fall back to the shared base caption). Keyed by platform name.
+// Per-platform caption overrides, filled in by "Adapt for each platform" or
+// "Suggest captions from video" (or left blank to fall back to the shared
+// base caption). Keyed by platform name.
 var platformCaptions = {};
+// AI-suggested caption options per platform, from "Suggest captions from
+// video", plus which option (if any) is currently picked for that platform.
+var platformSuggestions = {};
+var platformPickedIdx = {};
+
+// Suggestion text comes from a model response — escape before it ever goes
+// into innerHTML, same as any other untrusted string.
+function escHtml(s) {
+  return String(s).replace(/[&<>"']/g, function (c) {
+    return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c];
+  });
+}
 
 function renderPlatforms() {
   var wrap = $("#platforms");
@@ -44,11 +59,19 @@ function renderPlatforms() {
   PLATFORMS.forEach(function (p) {
     var card = document.createElement("div");
     card.className = "platformcard";
+    var suggestions = platformSuggestions[p.name] || [];
+    var pickedIdx = platformPickedIdx[p.name];
+    var suggestionsHtml = suggestions.length
+      ? '<div class="psuggestions">' + suggestions.map(function (s, i) {
+          return '<button class="suggestchip' + (i === pickedIdx ? ' picked' : '') + '" type="button" data-idx="' + i + '">' + escHtml(s) + '</button>';
+        }).join('') + '</div>'
+      : '';
     card.innerHTML =
       '<div class="pname"><span class="picon">' + p.icon + '</span>' + p.name +
       (p.note ? ' <span style="color:var(--faint);font-weight:400;font-size:11px">(' + p.note + ')</span>' : '') +
       '</div>' +
-      '<textarea class="pcaption" placeholder="Same as base caption until you Adapt, or type your own">' + (platformCaptions[p.name] || "") + '</textarea>' +
+      suggestionsHtml +
+      '<textarea class="pcaption" placeholder="Same as base caption until you Adapt, or type your own">' + escHtml(platformCaptions[p.name] || "") + '</textarea>' +
       '<div class="prow">' +
       '<button class="btn ghost copybtn" type="button">Copy caption</button>' +
       '<a class="btn primary" href="' + p.url + '" target="_blank" rel="noopener">Open ' + (p.note ? 'app' : 'upload') + ' →</a>' +
@@ -56,6 +79,18 @@ function renderPlatforms() {
     var pcaption = card.querySelector(".pcaption");
     pcaption.addEventListener("input", function () {
       platformCaptions[p.name] = pcaption.value;
+      delete platformPickedIdx[p.name];
+      card.querySelectorAll(".suggestchip").forEach(function (c) { c.classList.remove("picked"); });
+    });
+    card.querySelectorAll(".suggestchip").forEach(function (chip) {
+      chip.addEventListener("click", function () {
+        var idx = parseInt(chip.dataset.idx, 10);
+        platformPickedIdx[p.name] = idx;
+        platformCaptions[p.name] = suggestions[idx];
+        pcaption.value = suggestions[idx];
+        card.querySelectorAll(".suggestchip").forEach(function (c) { c.classList.remove("picked"); });
+        chip.classList.add("picked");
+      });
     });
     card.querySelector(".copybtn").addEventListener("click", function () {
       var text = (pcaption.value || "").trim() || $("#caption").value;
@@ -83,48 +118,125 @@ function saveSettingsObj(s) {
 }
 
 var settingscrim = $("#settingscrim"),
-    gemkey = $("#gemkey"),
-    keystatus = $("#keystatus"),
-    keyshow = $("#keyshow");
+    gemkey = $("#gemkey"), keystatus = $("#keystatus"), keyshow = $("#keyshow"),
+    orkey = $("#orkey"), orkeystatus = $("#orkeystatus"), orkeyshow = $("#orkeyshow"),
+    ormodel = $("#ormodel"),
+    geminiFields = $("#geminiFields"), openrouterFields = $("#openrouterFields"),
+    providerGemini = $("#providerGemini"), providerOpenrouter = $("#providerOpenrouter");
+
+// Reads current settings into the { provider, geminiKey, openrouterKey,
+// openrouterModel } shape llm.js expects.
+function getProviderConfig() {
+  var s = loadSettings();
+  return {
+    provider: s.provider === "openrouter" ? "openrouter" : "gemini",
+    geminiKey: s.geminiKey || "",
+    openrouterKey: s.openrouterKey || "",
+    openrouterModel: s.openrouterModel || "google/gemini-2.0-flash-001",
+  };
+}
+
+function keyStatusText(k) { return k ? "Key saved (" + k.slice(0, 4) + "…" + k.slice(-4) + ")" : "No key saved."; }
+
+function showProviderFields(provider) {
+  geminiFields.classList.toggle("hidden", provider !== "gemini");
+  openrouterFields.classList.toggle("hidden", provider !== "openrouter");
+}
 
 function openSettings() {
   settingscrim.classList.add("open");
-  var k = loadSettings().geminiKey || "";
-  gemkey.value = k;
-  keystatus.textContent = k ? "Key saved (" + k.slice(0, 4) + "…" + k.slice(-4) + ")" : "No key saved.";
-  keystatus.className = "keystatus " + (k ? "set" : "empty");
+  var s = loadSettings();
+  var provider = s.provider === "openrouter" ? "openrouter" : "gemini";
+  providerGemini.checked = provider === "gemini";
+  providerOpenrouter.checked = provider === "openrouter";
+  showProviderFields(provider);
+
+  gemkey.value = s.geminiKey || "";
+  keystatus.textContent = keyStatusText(s.geminiKey);
+  keystatus.className = "keystatus " + (s.geminiKey ? "set" : "empty");
   gemkey.type = "password";
   keyshow.textContent = "show";
-  setTimeout(function () { gemkey.focus(); gemkey.select(); }, 40);
+
+  orkey.value = s.openrouterKey || "";
+  orkeystatus.textContent = keyStatusText(s.openrouterKey);
+  orkeystatus.className = "keystatus " + (s.openrouterKey ? "set" : "empty");
+  orkey.type = "password";
+  orkeyshow.textContent = "show";
+  ormodel.value = s.openrouterModel || "google/gemini-2.0-flash-001";
+
+  setTimeout(function () { (provider === "gemini" ? gemkey : orkey).focus(); }, 40);
 }
-function closeSettings() { settingscrim.classList.remove("open"); }
+function closeSettings() { settingscrim.classList.remove("open"); updateAnalysisModeAvailability(); }
+
+// Vision mode needs Gemini specifically — proactively disable it rather than
+// let someone pick it, click Suggest, and hit an error. Runs on load and
+// whenever Settings closes (provider may have just changed).
+function updateAnalysisModeAvailability() {
+  var modeVision = $("#modeVision");
+  if (!modeVision) return;
+  var isOpenrouter = getProviderConfig().provider === "openrouter";
+  modeVision.disabled = isOpenrouter;
+  if (isOpenrouter && modeVision.checked) {
+    modeVision.checked = false;
+    $("#modeTranscript").checked = true;
+  }
+}
+
+providerGemini.addEventListener("change", function () { if (providerGemini.checked) showProviderFields("gemini"); });
+providerOpenrouter.addEventListener("change", function () { if (providerOpenrouter.checked) showProviderFields("openrouter"); });
+updateAnalysisModeAvailability();
 
 keyshow.addEventListener("click", function () {
   if (gemkey.type === "password") { gemkey.type = "text"; keyshow.textContent = "hide"; }
   else { gemkey.type = "password"; keyshow.textContent = "show"; }
 });
+orkeyshow.addEventListener("click", function () {
+  if (orkey.type === "password") { orkey.type = "text"; orkeyshow.textContent = "hide"; }
+  else { orkey.type = "password"; orkeyshow.textContent = "show"; }
+});
+
 $("#keysave").addEventListener("click", function () {
-  var k = gemkey.value.trim();
-  if (!k) { toast("Enter a key first"); return; }
-  if (!/^AIza[0-9A-Za-z_\-]{20,}$/.test(k)) {
+  var gk = gemkey.value.trim();
+  var ok = orkey.value.trim();
+  if (gk && !/^AIza[0-9A-Za-z_\-]{20,}$/.test(gk)) {
     toast("That doesn't look like a Gemini API key");
     return;
   }
-  if (saveSettingsObj({ geminiKey: k })) {
-    keystatus.textContent = "Key saved (" + k.slice(0, 4) + "…" + k.slice(-4) + ")";
-    keystatus.className = "keystatus set";
-    toast("API key saved");
+  if (ok && ok.length < 20) {
+    toast("That doesn't look like an OpenRouter API key");
+    return;
+  }
+  var provider = providerOpenrouter.checked ? "openrouter" : "gemini";
+  if (provider === "gemini" && !gk) { toast("Enter a Gemini key first"); return; }
+  if (provider === "openrouter" && !ok) { toast("Enter an OpenRouter key first"); return; }
+  var saved = saveSettingsObj({
+    provider: provider,
+    geminiKey: gk,
+    openrouterKey: ok,
+    openrouterModel: ormodel.value.trim() || "google/gemini-2.0-flash-001",
+  });
+  if (saved) {
+    toast("Settings saved");
     closeSettings();
   } else {
-    toast("Couldn't save key (storage full?)");
+    toast("Couldn't save settings (storage full?)");
   }
 });
 $("#keyclear").addEventListener("click", function () {
-  gemkey.value = "";
-  localStorage.removeItem(LS_SETTINGS);
-  keystatus.textContent = "No key saved.";
-  keystatus.className = "keystatus empty";
-  toast("API key cleared");
+  var s = loadSettings();
+  if (providerOpenrouter.checked) {
+    orkey.value = "";
+    s.openrouterKey = "";
+    orkeystatus.textContent = "No key saved.";
+    orkeystatus.className = "keystatus empty";
+  } else {
+    gemkey.value = "";
+    s.geminiKey = "";
+    keystatus.textContent = "No key saved.";
+    keystatus.className = "keystatus empty";
+  }
+  saveSettingsObj(s);
+  toast("Key cleared");
 });
 $("#keycancel").addEventListener("click", closeSettings);
 settingscrim.addEventListener("click", function (e) { if (e.target === settingscrim) closeSettings(); });
@@ -134,13 +246,8 @@ document.addEventListener("keydown", function (e) {
   if (e.key === "Escape" && settingscrim.classList.contains("open")) closeSettings();
 });
 
-// === Adapt caption per platform (Gemini) ===
-var GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent";
-
+// === Adapt caption per platform (provider-aware: Gemini or OpenRouter) ===
 async function adaptCaptionsForPlatforms(baseCaption) {
-  var key = loadSettings().geminiKey;
-  if (!key) throw new Error("No Gemini API key — open Settings to add one");
-
   var names = PLATFORMS.map(function (p) { return p.name; });
   var prompt = "You write short-form video captions. Given this base caption, rewrite it tailored " +
     "to each platform's real conventions (typical length, hashtag style, tone) while keeping the " +
@@ -148,26 +255,10 @@ async function adaptCaptionsForPlatforms(baseCaption) {
     "\n\nRespond with ONLY a JSON object whose keys are exactly the platform names above and whose " +
     "values are the tailored caption strings. No markdown, no explanation, no extra keys.";
 
-  var res = await fetch(GEMINI_ENDPOINT + "?key=" + encodeURIComponent(key), {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
-      generationConfig: { temperature: 0.4, responseMimeType: "application/json" },
-    }),
-  });
-  if (!res.ok) {
-    var body = await res.text().catch(function () { return ""; });
-    throw new Error("Gemini error " + res.status + ": " + body.slice(0, 150));
-  }
-  var json = await res.json();
-  var candidate = json && json.candidates && json.candidates[0];
-  var text = candidate && candidate.content && candidate.content.parts &&
-             candidate.content.parts[0] && candidate.content.parts[0].text;
-  if (!text) throw new Error("Empty response from Gemini");
+  var text = await generateText(getProviderConfig(), { prompt: prompt, jsonMode: true, temperature: 0.4 });
   var parsed;
   try { parsed = JSON.parse(text); }
-  catch (e) { throw new Error("Gemini returned something that wasn't valid JSON"); }
+  catch (e) { throw new Error("Model returned something that wasn't valid JSON"); }
   return parsed;
 }
 
@@ -178,7 +269,7 @@ $("#adaptBtn").addEventListener("click", async function () {
   var label = $("#adaptLabel");
   btn.disabled = true;
   btn.textContent = "Adapting…";
-  label.textContent = "Calling Gemini…";
+  label.textContent = getProviderConfig().provider === "openrouter" ? "Calling OpenRouter…" : "Calling Gemini…";
   try {
     var adapted = await adaptCaptionsForPlatforms(base);
     PLATFORMS.forEach(function (p) {
@@ -194,10 +285,88 @@ $("#adaptBtn").addEventListener("click", async function () {
     label.textContent = "";
     var msg = err && err.message ? err.message : "unknown error";
     toast("Couldn't adapt captions: " + msg);
-    if (/no gemini api key/i.test(msg)) openSettings();
+    if (/no (gemini|openrouter) api key/i.test(msg)) openSettings();
   } finally {
     btn.disabled = false;
     btn.textContent = "Adapt for each platform →";
+  }
+});
+
+// === Suggest captions from video (vision watches it directly, Gemini-only;
+// transcript mode transcribes first, then writes captions from that — works
+// on either provider, though a video *file's* audio still needs Gemini
+// until an audio-extraction step exists) ===
+var TRANSCRIBE_FOR_CAPTIONS_PROMPT = "Transcribe the spoken audio in this clip plainly — no timestamps, " +
+  "no speaker labels, just the words said as one block of text. If there's no speech, briefly describe " +
+  "what's visually happening instead.";
+
+function captionSuggestPrompt(names, count) {
+  return "Propose exactly " + count + " distinct caption option" + (count > 1 ? "s" : "") + " for each of " +
+    "these platforms, tailored to each platform's real conventions (typical length, hashtag style, tone): " +
+    names.join(", ") + ".\n\nRespond with ONLY a JSON object whose keys are exactly the platform names " +
+    "above and whose values are arrays of exactly " + count + " caption string" + (count > 1 ? "s" : "") +
+    " each, ordered best-first. No markdown, no explanation, no extra keys.";
+}
+
+function parseCaptionJSON(text) {
+  try { return JSON.parse(text); }
+  catch (e) { throw new Error("Model returned something that wasn't valid JSON"); }
+}
+
+async function suggestCaptionsFromVideo(file, mode, count, onPhase) {
+  var config = getProviderConfig();
+  var names = PLATFORMS.map(function (p) { return p.name; });
+
+  if (mode === "vision") {
+    if (!providerSupportsVideo(config)) {
+      throw new Error("Video analysis needs Gemini — switch provider in Settings, or use transcript mode.");
+    }
+    var visionPrompt = "Watch this video clip, then: " + captionSuggestPrompt(names, count);
+    var text = await generateFromMedia(config, { file: file, prompt: visionPrompt, jsonMode: true, mediaKind: "video", onPhase: onPhase });
+    return parseCaptionJSON(text);
+  }
+
+  onPhase("Transcribing");
+  var mediaKind = (file.type || "").indexOf("video/") === 0 ? "video" : "audio";
+  var transcript = await generateFromMedia(config, { file: file, prompt: TRANSCRIBE_FOR_CAPTIONS_PROMPT, mediaKind: mediaKind, onPhase: onPhase });
+  onPhase("Writing captions");
+  var textPrompt = "Here is a transcript of a video clip:\n\n" + transcript + "\n\n" + captionSuggestPrompt(names, count);
+  var text2 = await generateText(config, { prompt: textPrompt, jsonMode: true, temperature: 0.5 });
+  return parseCaptionJSON(text2);
+}
+
+$("#suggestBtn").addEventListener("click", async function () {
+  if (!pendingFile) { toast("Upload a clip in the optional section below first"); return; }
+  var mode = $("#modeVision").checked ? "vision" : "transcript";
+  var countInput = document.querySelector('input[name="suggestCount"]:checked');
+  var count = parseInt(countInput ? countInput.value : "3", 10);
+  var btn = $("#suggestBtn");
+  var label = $("#suggestLabel");
+  btn.disabled = true;
+  btn.textContent = "Analyzing…";
+  try {
+    var results = await suggestCaptionsFromVideo(pendingFile, mode, count, function (phase) {
+      label.textContent = phase + "…";
+    });
+    PLATFORMS.forEach(function (p) {
+      var arr = results[p.name];
+      if (Array.isArray(arr) && arr.length) {
+        platformSuggestions[p.name] = arr.slice(0, count).map(String);
+        delete platformPickedIdx[p.name];
+      }
+    });
+    renderPlatforms();
+    label.textContent = "";
+    toast("Caption suggestions ready — pick one per platform");
+  } catch (err) {
+    console.error(err);
+    label.textContent = "";
+    var msg = err && err.message ? err.message : "unknown error";
+    toast("Couldn't suggest captions: " + msg);
+    if (/no (gemini|openrouter) api key/i.test(msg)) openSettings();
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Suggest captions from video →";
   }
 });
 

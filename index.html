@@ -51,10 +51,39 @@
       <button class="btn primary" id="adaptBtn" type="button">Adapt for each platform →</button>
       <span class="progress" id="adaptLabel"></span>
     </div>
-    <p class="hint" style="margin:-10px 0 16px">Uses your own Gemini API key (free tier works) to
+    <p class="hint" style="margin:-10px 0 16px">Uses your own API key (free Gemini tier works) to
       rewrite the caption per platform's length and hashtag conventions.
       <button class="linkbtn" id="openSettingsFromHint" type="button">Add a key in Settings</button>
       if you haven't. Without a key, every platform just uses your base caption above.</p>
+
+    <div class="subpanel" id="videoSuggestPanel">
+      <h3>Or get caption ideas from your video</h3>
+      <p class="hint" style="margin:2px 0 12px">Upload a clip in the optional section below first, then
+        come back here — I'll suggest captions based on what's actually in it instead of you writing one
+        from scratch.</p>
+      <div class="actionrow" style="flex-wrap:wrap;margin-bottom:14px">
+        <div class="providerrow" id="analysisModeGroup">
+          <label class="radiopill"><input type="radio" name="analysisMode" id="modeVision" value="vision" checked>Watch the video <span class="pilltag">Gemini</span></label>
+          <label class="radiopill"><input type="radio" name="analysisMode" id="modeTranscript" value="transcript">From transcript <span class="pilltag">any provider*</span></label>
+        </div>
+      </div>
+      <div class="actionrow" style="flex-wrap:wrap;margin-bottom:14px">
+        <span class="hint" style="margin-right:2px">Options per platform:</span>
+        <div class="providerrow" id="countGroup">
+          <label class="radiopill"><input type="radio" name="suggestCount" value="1">1</label>
+          <label class="radiopill"><input type="radio" name="suggestCount" value="3" checked>3</label>
+          <label class="radiopill"><input type="radio" name="suggestCount" value="5">5</label>
+        </div>
+      </div>
+      <div class="actionrow">
+        <button class="btn primary" id="suggestBtn" type="button">Suggest captions from video →</button>
+        <span class="progress" id="suggestLabel"></span>
+      </div>
+      <p class="hint" style="margin-top:10px">*For an actual video file (not audio-only), transcript mode
+        still needs Gemini in this version — OpenRouter has no path to read a video file at all yet, even
+        just for its audio track.</p>
+    </div>
+
     <div class="platforms" id="platforms"></div>
     <p class="hint" style="margin-top:14px">BLAST doesn't auto-post yet — that needs each platform's
       developer API access, which requires business verification I haven't set up. For now: copy the
@@ -117,19 +146,52 @@
   <div class="modal" role="dialog" aria-modal="true">
     <h2>Settings</h2>
     <div class="mbody">
-      <div><label>Gemini API key</label>
+      <div>
+        <label>AI provider</label>
+        <div class="providerrow">
+          <label class="radiopill"><input type="radio" name="provider" id="providerGemini" value="gemini" checked>Gemini <span class="pilltag">default</span></label>
+          <label class="radiopill"><input type="radio" name="provider" id="providerOpenrouter" value="openrouter">OpenRouter <span class="pilltag">pick your model</span></label>
+        </div>
+        <p class="hint" style="margin-top:8px">Gemini is the easy default and the only option that can watch
+          video directly. OpenRouter lets you pick any text model, but has no large-file upload and can't
+          do video analysis here.</p>
+      </div>
+
+      <div id="geminiFields">
+        <label>Gemini API key</label>
         <div class="keyrow">
           <input id="gemkey" type="password" placeholder="AIza…" autocomplete="off" spellcheck="false">
           <button id="keyshow" type="button">show</button>
         </div>
         <div class="keystatus empty" id="keystatus">No key saved.</div>
-        <p class="hint keyhint" style="margin-top:8px">Only used for "Adapt for each platform." Stored
-          only in this browser's localStorage and sent only to Google Gemini.
+        <p class="hint keyhint" style="margin-top:8px">Stored only in this browser's localStorage and sent
+          only to Google Gemini.
           <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener">Get a free key at aistudio.google.com</a>.</p>
+      </div>
+
+      <div id="openrouterFields" class="hidden">
+        <label>OpenRouter API key</label>
+        <div class="keyrow">
+          <input id="orkey" type="password" placeholder="sk-or-…" autocomplete="off" spellcheck="false">
+          <button id="orkeyshow" type="button">show</button>
+        </div>
+        <div class="keystatus empty" id="orkeystatus">No key saved.</div>
+        <label style="margin-top:12px;display:block">Model</label>
+        <input id="ormodel" type="text" list="ormodels" placeholder="google/gemini-2.0-flash-001" autocomplete="off" spellcheck="false">
+        <datalist id="ormodels">
+          <option value="google/gemini-2.0-flash-001">Gemini 2.0 Flash — media-capable</option>
+          <option value="openai/gpt-4o-mini">GPT-4o mini — media-capable</option>
+          <option value="anthropic/claude-3.5-haiku">Claude 3.5 Haiku — text only</option>
+          <option value="meta-llama/llama-3.3-70b-instruct">Llama 3.3 70B — text only</option>
+        </datalist>
+        <p class="hint keyhint" style="margin-top:8px">Stored only in this browser's localStorage and sent
+          only to OpenRouter. No large-file upload like Gemini's (~15MB inline limit), and video analysis
+          isn't supported here — switch to Gemini for that.
+          <a href="https://openrouter.ai/keys" target="_blank" rel="noopener">Get a key at openrouter.ai</a>.</p>
       </div>
     </div>
     <div class="mfoot">
-      <button class="btn ghost" id="keyclear">Clear</button>
+      <button class="btn ghost" id="keyclear">Clear this key</button>
       <button class="btn ghost" id="keycancel">Cancel</button>
       <button class="btn primary" id="keysave">Save</button>
     </div>

@@ -2,26 +2,48 @@
 
 **Cut once, post everywhere.**
 
-RECALL finds the moment. BLAST gets it out the door. Upload a clip, get it reformatted to 9:16 for
-YouTube Shorts, TikTok, Instagram Reels, and Snapchat Spotlight, then write one caption and jump
-straight to each platform's upload page.
+RECALL finds the moment. BLAST gets it out the door. Write a caption, get it tailored per platform
+(or let AI suggest captions straight from your video), and jump to each platform's upload page —
+YouTube Shorts, TikTok, Instagram Reels, Snapchat Spotlight, Facebook Reels, X, LinkedIn, and
+Pinterest. Optionally reformat a clip to 9:16 first, entirely in your browser.
 
-## What it does today (v1)
+## What it does today
 
-1. **Upload** a video (mp4/mov/webm).
-2. **Reformat** — crops and scales to a centered 9:16 vertical clip, entirely in your browser via
-   [ffmpeg.wasm](https://ffmpegwasm.netlify.app/). Nothing is uploaded to a server.
-3. **Download** the vertical clip.
-4. **Caption once** — write it once, copy it per platform, and jump to each platform's upload page
-   with one click.
+1. **Caption once, post everywhere** — write a base caption, jump straight to each of the 8
+   platforms' upload pages. This works with zero upload; it's the primary flow, not gated behind
+   anything else.
+2. **Adapt for each platform** — one AI call rewrites your base caption per platform's real
+   conventions (length, hashtag style, tone). Each platform gets its own editable result.
+3. **Suggest captions from video** — upload your edited clip and get AI-proposed captions instead
+   of writing one from scratch, with a choice of how many options per platform (1, 3, or 5):
+   - **Watch the video** (Gemini only) — the model watches the actual clip (visuals + audio).
+   - **From transcript** (any provider) — transcribes first, then writes captions from that. For an
+     actual video *file*, this still needs Gemini for now — there's no path to read a video's audio
+     track through OpenRouter yet, even for transcription only.
+4. **Reformat to 9:16** (optional) — crops and scales to a centered vertical clip, entirely in your
+   browser via [ffmpeg.wasm](https://ffmpegwasm.netlify.app/). Nothing is uploaded to a server. Not
+   required to use any of the caption/platform features above — useful only if you need a quick crop
+   without opening editing software.
+
+## AI provider
+
+**Gemini is the default** — add a free API key in Settings and everything works. Power users can
+switch to **OpenRouter** instead and pick any text model. The two aren't equivalent, though:
+Gemini has a resumable upload path for large files (up to 2GB) and can watch video directly.
+OpenRouter is an OpenAI-compatible **text** API — no large-file upload (~15MB inline ceiling) and no
+reliable video input. So: caption adaptation and transcript-based suggestions work on either
+provider (small files); watching the video directly is Gemini-only, and the app disables that
+option automatically if OpenRouter is selected rather than let you hit an error. Your key is stored
+only in this browser's localStorage and sent only to whichever provider you pick — never to a
+BLAST server, because there isn't one.
 
 ## What it doesn't do yet
 
 BLAST doesn't auto-post. Real auto-posting requires registering a developer app with each platform
-(TikTok Content Posting API, Instagram Graph API, YouTube Data API, Snapchat) — most of which gate
-this behind business verification and app review. That's a v2 feature once those credentials exist.
-Until then, this ships the part that's actually buildable today: kill the manual reformatting step,
-keep the manual posting step.
+(TikTok Content Posting API, Instagram Graph API, YouTube Data API, Snapchat, Meta, X, LinkedIn) —
+most of which gate this behind business verification and app review. That's a later feature once
+those credentials exist. Until then, this ships the part that's actually buildable today: kill the
+manual reformatting/captioning tax, keep the manual posting step.
 
 ## Run it
 
@@ -43,9 +65,11 @@ same content RECALL indexes). A source already narrower than 9:16 isn't handled 
 
 - Auto-posting once platform developer API access is set up.
 - Multiple aspect ratios / platform-specific crops instead of one shared 9:16.
-- Per-platform caption variants (character limits, hashtag conventions) instead of one shared caption.
-- Batch mode: reformat multiple clips from a RECALL export in one pass.
+- Extract audio client-side (BLAST already vendors ffmpeg.wasm) before transcript mode, so OpenRouter
+  can handle video files too instead of needing Gemini for anything beyond audio-only uploads.
+- Batch mode: process multiple clips from a RECALL export in one pass.
 
 ---
 
-Built by Michael Morrison. Client-side only — your video never leaves your device.
+Built by Michael Morrison. Client-side only — your video never leaves your device except to whichever
+AI provider you choose, with your own key.
