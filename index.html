@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#0E1116" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#F5F6F8" media="(prefers-color-scheme: light)">
+<meta name="description" content="BLAST by Michael Morrison — cut once, post everywhere. Reformat a clip for every platform in one pass.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%23F2722A'/%3E%3Cpath d='M13 3 6 14h5l-1 7 8-11h-5l1-7z' fill='white'/%3E%3C/svg%3E">
+<link rel="manifest" href="manifest.json">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="BLAST">
+<title>BLAST — by Michael Morrison</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="wrap">
+  <div class="top">
+    <div class="brand">
+      <span class="logo" id="logo"><b>MJM</b></span>
+      <span class="lock">
+        <span class="mark"><span class="dot"></span>BLAST</span>
+        <span class="by">by Michael Morrison</span>
+      </span>
+    </div>
+    <div class="actions">
+      <button class="iconbtn" id="theme">THEME</button>
+    </div>
+  </div>
+  <p class="lede">Cut once, post everywhere. Upload a clip, get a 9:16 version ready for YouTube
+    Shorts, TikTok, Instagram Reels, and Snapchat — plus one-click links to actually post it.
+    Everything happens in your browser. Nothing is uploaded to a server.</p>
+
+  <!-- STEP 1: Upload -->
+  <section class="panel" id="uploadPanel">
+    <div class="panelhead">
+      <span class="step">Step 1</span>
+      <h2>Drop in a clip</h2>
+    </div>
+    <div class="uploadzone" id="uploadzone" role="button" tabindex="0">
+      <div class="pick" id="picklabel">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+        Choose or drop a video file
+      </div>
+      <div class="hint">mp4 · mov · webm — best under 2 min / 200MB, processed entirely in this browser</div>
+      <input type="file" id="videofile" accept="video/*,.mp4,.mov,.webm" style="display:none">
+    </div>
+  </section>
+
+  <!-- STEP 2: Preview + reformat -->
+  <section class="panel hidden" id="previewPanel">
+    <div class="panelhead">
+      <span class="step">Step 2</span>
+      <h2>Reformat to 9:16</h2>
+    </div>
+    <div class="previewrow">
+      <div class="videobox">
+        <div class="videolabel">Source</div>
+        <video id="sourceVideo" controls></video>
+      </div>
+      <div class="videobox" id="resultBox" style="display:none">
+        <div class="videolabel">Vertical (9:16)</div>
+        <video id="resultVideo" controls></video>
+      </div>
+    </div>
+    <div class="actionrow">
+      <button class="btn primary" id="reformatBtn">Reformat to 9:16 →</button>
+      <button class="btn ghost" id="downloadBtn" style="display:none">Download vertical clip</button>
+      <span class="progress" id="progressLabel"></span>
+    </div>
+    <div class="progressbar" id="progressBar" style="display:none">
+      <div class="progressfill" id="progressFill"></div>
+    </div>
+  </section>
+
+  <!-- STEP 3: Caption + post -->
+  <section class="panel hidden" id="captionPanel">
+    <div class="panelhead">
+      <span class="step">Step 3</span>
+      <h2>Caption once, post everywhere</h2>
+    </div>
+    <textarea id="caption" placeholder="Write your caption + hashtags once. Copy it into each platform below when you post."></textarea>
+    <div class="platforms" id="platforms"></div>
+    <p class="hint" style="margin-top:14px">BLAST doesn't auto-post yet — that needs each platform's
+      developer API access, which requires business verification I haven't set up. For now: download the
+      clip, copy the caption, hit the platform link, paste and post. Still faster than reformatting four
+      times by hand.</p>
+  </section>
+
+  <footer class="foot">
+    <div>
+      <div class="fname">Michael Morrison</div>
+      <div class="ftag">AI-assisted growth for creators — RECALL finds the moment, BLAST gets it out the door.</div>
+    </div>
+    <a class="fcta" href="https://mjmorrisonusa.com" target="_blank" rel="noopener">mjmorrisonusa.com &rarr;</a>
+  </footer>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script type="module" src="app.js"></script>
+
+</body>
+</html>

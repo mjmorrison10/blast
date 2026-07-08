@@ -1,0 +1,12 @@
+{
+  "name": "BLAST",
+  "short_name": "BLAST",
+  "description": "Cut once, post everywhere. Reformat a clip for every platform in one pass.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0E1116",
+  "theme_color": "#0E1116",
+  "categories": ["productivity", "utilities"]
+}
