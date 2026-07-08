@@ -28,19 +28,47 @@
       </span>
     </div>
     <div class="actions">
+      <button class="iconbtn" id="settings" title="Settings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        SETTINGS
+      </button>
       <button class="iconbtn" id="theme">THEME</button>
     </div>
   </div>
-  <p class="lede">Cut once, post everywhere. Upload a clip, get a 9:16 version ready for YouTube
-    Shorts, TikTok, Instagram Reels, and Snapchat — plus one-click links to actually post it.
-    Everything happens in your browser. Nothing is uploaded to a server.</p>
+  <p class="lede">Cut once, post everywhere. Write a caption, get it tailored per platform, and jump
+    straight to each upload page — for YouTube Shorts, TikTok, Instagram Reels, Snapchat, Facebook,
+    X, LinkedIn, and Pinterest. Optionally reformat a clip to 9:16 first, entirely in your browser.
+    Nothing is uploaded to a server.</p>
 
-  <!-- STEP 1: Upload -->
+  <!-- MAIN: Caption + post — always available, no gating -->
+  <section class="panel" id="captionPanel">
+    <div class="panelhead">
+      <span class="step">Start here</span>
+      <h2>Caption once, post everywhere</h2>
+    </div>
+    <textarea id="caption" placeholder="Write your base caption + hashtags once."></textarea>
+    <div class="actionrow" style="margin-bottom:16px">
+      <button class="btn primary" id="adaptBtn" type="button">Adapt for each platform →</button>
+      <span class="progress" id="adaptLabel"></span>
+    </div>
+    <p class="hint" style="margin:-10px 0 16px">Uses your own Gemini API key (free tier works) to
+      rewrite the caption per platform's length and hashtag conventions.
+      <button class="linkbtn" id="openSettingsFromHint" type="button">Add a key in Settings</button>
+      if you haven't. Without a key, every platform just uses your base caption above.</p>
+    <div class="platforms" id="platforms"></div>
+    <p class="hint" style="margin-top:14px">BLAST doesn't auto-post yet — that needs each platform's
+      developer API access, which requires business verification I haven't set up. For now: copy the
+      caption, hit the platform link, paste and post.</p>
+  </section>
+
+  <!-- OPTIONAL: reformat a clip to 9:16, entirely in-browser -->
   <section class="panel" id="uploadPanel">
     <div class="panelhead">
-      <span class="step">Step 1</span>
-      <h2>Drop in a clip</h2>
+      <span class="step">Optional</span>
+      <h2>Also reformatting a clip to 9:16?</h2>
     </div>
+    <p class="hint" style="margin:-4px 0 14px">Already exporting vertical from your editor? Skip this
+      — it's only useful if you need a quick 9:16 crop without opening editing software.</p>
     <div class="uploadzone" id="uploadzone" role="button" tabindex="0">
       <div class="pick" id="picklabel">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
@@ -51,10 +79,9 @@
     </div>
   </section>
 
-  <!-- STEP 2: Preview + reformat -->
   <section class="panel hidden" id="previewPanel">
     <div class="panelhead">
-      <span class="step">Step 2</span>
+      <span class="step">Optional</span>
       <h2>Reformat to 9:16</h2>
     </div>
     <div class="previewrow">
@@ -77,20 +104,6 @@
     </div>
   </section>
 
-  <!-- STEP 3: Caption + post -->
-  <section class="panel hidden" id="captionPanel">
-    <div class="panelhead">
-      <span class="step">Step 3</span>
-      <h2>Caption once, post everywhere</h2>
-    </div>
-    <textarea id="caption" placeholder="Write your caption + hashtags once. Copy it into each platform below when you post."></textarea>
-    <div class="platforms" id="platforms"></div>
-    <p class="hint" style="margin-top:14px">BLAST doesn't auto-post yet — that needs each platform's
-      developer API access, which requires business verification I haven't set up. For now: download the
-      clip, copy the caption, hit the platform link, paste and post. Still faster than reformatting four
-      times by hand.</p>
-  </section>
-
   <footer class="foot">
     <div>
       <div class="fname">Michael Morrison</div>
@@ -98,6 +111,29 @@
     </div>
     <a class="fcta" href="https://mjmorrisonusa.com" target="_blank" rel="noopener">mjmorrisonusa.com &rarr;</a>
   </footer>
+</div>
+
+<div class="scrim" id="settingscrim">
+  <div class="modal" role="dialog" aria-modal="true">
+    <h2>Settings</h2>
+    <div class="mbody">
+      <div><label>Gemini API key</label>
+        <div class="keyrow">
+          <input id="gemkey" type="password" placeholder="AIza…" autocomplete="off" spellcheck="false">
+          <button id="keyshow" type="button">show</button>
+        </div>
+        <div class="keystatus empty" id="keystatus">No key saved.</div>
+        <p class="hint keyhint" style="margin-top:8px">Only used for "Adapt for each platform." Stored
+          only in this browser's localStorage and sent only to Google Gemini.
+          <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener">Get a free key at aistudio.google.com</a>.</p>
+      </div>
+    </div>
+    <div class="mfoot">
+      <button class="btn ghost" id="keyclear">Clear</button>
+      <button class="btn ghost" id="keycancel">Cancel</button>
+      <button class="btn primary" id="keysave">Save</button>
+    </div>
+  </div>
 </div>
 
 <div class="toast" id="toast"></div>
