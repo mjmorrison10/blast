@@ -36,6 +36,28 @@ var PLATFORMS = [
   { icon: "📌", name: "Pinterest", url: "https://www.pinterest.com/pin-builder/" },
 ];
 
+// Per-platform caption rules for soft validation (never a hard block — these
+// only drive a live counter + warnings). `limit` is the practical caption
+// character cap; `hashtagMax` is a recommended-not-enforced ceiling.
+// Notes on the fuzzier ones: YouTube Shorts caps the *title* (the text shown
+// under a Short) at 100 — the 5000-char description is a separate box BLAST
+// doesn't model, so 100 is the limiting field. Snapchat Spotlight captions are
+// a short overlay, so 80 is a deliberately conservative cap.
+var PLATFORM_RULES = {
+  "YouTube Shorts":     { limit: 100,  hashtagMax: 3 },
+  "TikTok":             { limit: 2200, hashtagMax: 5 },
+  "Instagram Reels":    { limit: 2200, hashtagMax: 10 },
+  "Snapchat Spotlight": { limit: 80,   hashtagMax: 3 },
+  "Facebook Reels":     { limit: 2200, hashtagMax: 5 },
+  "X":                  { limit: 280,  hashtagMax: 2 },
+  "LinkedIn":           { limit: 3000, hashtagMax: 5 },
+  "Pinterest":          { limit: 500,  hashtagMax: 5 },
+};
+var DEFAULT_RULES = { limit: 2200, hashtagMax: 10 };
+var EMOJI_MAX = 8;            // more than this reads as spammy
+var ALLCAPS_MIN_LETTERS = 15; // don't flag short acronyms as "all caps"
+var NEAR_RATIO = 0.9;         // amber once the caption hits 90% of the limit
+
 // Per-platform caption overrides, filled in by "Adapt for each platform" or
 // "Suggest captions from video" (or left blank to fall back to the shared
 // base caption). Keyed by platform name.
@@ -117,6 +139,32 @@ function captionFor(p, pcaptionEl) {
   return ((own || "").trim() || ($("#caption").value || "")).trim();
 }
 
+// Pure, cheap, zero-AI caption check. All findings are advisory — nothing here
+// ever blocks a copy or disables a button. Returns counts + a `messages` list.
+function validate(caption, rules) {
+  rules = rules || DEFAULT_RULES;
+  var text = caption || "";
+  var count = text.length;
+  var limit = rules.limit;
+  var over = count > limit;
+  var near = !over && count >= Math.round(limit * NEAR_RATIO);
+  var hashtagCount = (text.match(/#[\p{L}0-9_]+/gu) || []).length;
+  var hashtagOver = hashtagCount > rules.hashtagMax;
+  var letters = (text.match(/\p{L}/gu) || []).length;
+  var allCaps = letters >= ALLCAPS_MIN_LETTERS &&
+    text === text.toUpperCase() && text !== text.toLowerCase();
+  var emojiCount = (text.match(/\p{Extended_Pictographic}/gu) || []).length;
+  var emojiExcess = emojiCount > EMOJI_MAX;
+  var messages = [];
+  if (over) messages.push((count - limit) + " over limit");
+  if (hashtagOver) messages.push(hashtagCount + " hashtags (max ~" + rules.hashtagMax + ")");
+  if (allCaps) messages.push("all caps");
+  if (emojiExcess) messages.push(emojiCount + " emoji");
+  return { count: count, limit: limit, over: over, near: near,
+    hashtagCount: hashtagCount, hashtagOver: hashtagOver,
+    allCaps: allCaps, emojiExcess: emojiExcess, messages: messages };
+}
+
 function copyText(text) {
   return navigator.clipboard.writeText(text);
 }
@@ -143,6 +191,7 @@ function renderPlatforms() {
       '</div>' +
       suggestionsHtml +
       '<textarea class="pcaption" placeholder="Same as base caption until you Adapt, or type your own">' + escHtml(platformCaptions[p.name] || "") + '</textarea>' +
+      '<div class="pmeta"><span class="valcount" data-level="ok"></span><span class="valwarn hidden"></span></div>' +
       '<div class="prow">' +
       '<button class="btn primary copyopenbtn" type="button">Copy + open ' + openLabel + ' →</button>' +
       '<button class="btn ghost copybtn" type="button">Copy only</button>' +
@@ -161,6 +210,7 @@ function renderPlatforms() {
       delete platformPickedIdx[p.name];
       card.querySelectorAll(".suggestchip").forEach(function (c) { c.classList.remove("picked"); });
       saveSession();
+      refreshValidation(card, p);
     });
     card.querySelectorAll(".suggestchip").forEach(function (chip) {
       chip.addEventListener("click", function () {
@@ -222,6 +272,10 @@ function renderPlatforms() {
     });
     posturl.addEventListener("change", refreshStatus);
 
+    // Initial pass so the counter is correct on every render path (load, Adapt,
+    // Suggest, Apply preset, Apply all, Reset) with no extra call sites.
+    refreshValidation(card, p);
+
     wrap.appendChild(card);
   });
   refreshStatus();
@@ -254,6 +308,30 @@ function refreshStatus() {
   }
   var bar = $("#sessionProgress");
   if (bar) bar.style.setProperty("--pct", Math.round((done / PLATFORMS.length) * 100) + "%");
+}
+
+// Surgical, per-card — same discipline as refreshStatus: update only the
+// counter/warning elements on keystroke, never re-render the card (which would
+// blur the field mid-edit). Reads the resolved caption (own value, else base).
+function refreshValidation(card, p) {
+  var pcaption = card.querySelector(".pcaption");
+  var valcount = card.querySelector(".valcount");
+  var valwarn = card.querySelector(".valwarn");
+  if (!pcaption || !valcount) return;
+  var text = (pcaption.value || "").trim() || ($("#caption").value || "").trim();
+  var r = validate(text, PLATFORM_RULES[p.name]);
+  valcount.textContent = r.count + " / " + r.limit;
+  valcount.setAttribute("data-level", r.over ? "over" : r.near ? "near" : "ok");
+  pcaption.classList.toggle("invalid", r.over);
+  // The over-limit count is already shown in the counter chip; only surface the
+  // other advisories here to avoid saying the same thing twice.
+  var warns = r.messages.filter(function (m) { return m.indexOf("over limit") === -1; });
+  if (warns.length) {
+    valwarn.textContent = "⚠ " + warns.join(" · ");
+    valwarn.classList.remove("hidden");
+  } else {
+    valwarn.classList.add("hidden");
+  }
 }
 
 loadSession();
