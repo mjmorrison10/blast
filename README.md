@@ -2,7 +2,8 @@
 
 **Cut once, post everywhere.**
 
-RECALL finds the moment. BLAST gets it out the door. Write a caption, get it tailored per platform
+BLAST is the posting command center of the creator ops stack — RECALL finds it, HOOKLAB underwrites
+the open, BLAST gets it out the door. Write a caption, get it tailored per platform
 (or let AI suggest captions straight from your video), and jump to each platform's upload page —
 YouTube Shorts, TikTok, Instagram Reels, Snapchat Spotlight, Facebook Reels, X, LinkedIn, and
 Pinterest. Optionally reformat a clip to 9:16 first, entirely in your browser.
@@ -77,6 +78,14 @@ same content RECALL indexes). A source already narrower than 9:16 isn't handled 
 - Extract audio client-side (BLAST already vendors ffmpeg.wasm) before transcript mode, so OpenRouter
   can handle video files too instead of needing Gemini for anything beyond audio-only uploads.
 - Batch mode: process multiple clips from a RECALL export in one pass.
+
+## The stack
+
+BLAST is one third of the creator ops stack:
+
+- **RECALL** — finds the moment: https://mjmorrisonusa.com/#/recall
+- **HOOKLAB** — underwrites the open: https://mjmorrisonusa.com/#/hooklab
+- **Portfolio** — https://mjmorrisonusa.com
 
 ---
 
