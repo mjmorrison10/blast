@@ -32,6 +32,7 @@ var PLATFORMS = [
   { icon: "👻", name: "Snapchat Spotlight", url: "https://www.snapchat.com/", note: "app recommended" },
   { icon: "📘", name: "Facebook Reels", url: "https://www.facebook.com/reels/create", note: "app recommended" },
   { icon: "✖️", name: "X", url: "https://x.com/compose/post" },
+  { icon: "🧵", name: "Threads", url: "https://www.threads.net/" },
   { icon: "💼", name: "LinkedIn", url: "https://www.linkedin.com/post/new/" },
   { icon: "📌", name: "Pinterest", url: "https://www.pinterest.com/pin-builder/" },
 ];
@@ -50,10 +51,27 @@ var PLATFORM_RULES = {
   "Snapchat Spotlight": { limit: 80,   hashtagMax: 3 },
   "Facebook Reels":     { limit: 2200, hashtagMax: 5 },
   "X":                  { limit: 280,  hashtagMax: 2 },
+  "Threads":            { limit: 500,  hashtagMax: 3 },
   "LinkedIn":           { limit: 3000, hashtagMax: 5 },
   "Pinterest":          { limit: 500,  hashtagMax: 5 },
 };
 var DEFAULT_RULES = { limit: 2200, hashtagMax: 10 };
+
+// Compose-intent URLs — X and Threads accept a prefilled ?text= param, so
+// "Copy + open" can land the user in a compose window with the caption already
+// in it. Everything else only has an upload page and keeps the plain URL +
+// clipboard flow. Clipboard copy always happens first as the backup either way.
+var INTENT_URLS = {
+  "X":       function (t) { return "https://x.com/intent/post?text=" + encodeURIComponent(t); },
+  "Threads": function (t) { return "https://www.threads.net/intent/post?text=" + encodeURIComponent(t); },
+};
+var INTENT_URL_MAX = 2000; // encoded chars — both platforms' caption limits fit well under this
+function openUrlFor(p, text) {
+  var build = INTENT_URLS[p.name];
+  if (!build) return p.url;
+  var u = build(text);
+  return u.length <= INTENT_URL_MAX ? u : p.url; // absurdly long → plain page; clipboard is the backup
+}
 var EMOJI_MAX = 8;            // more than this reads as spammy
 var ALLCAPS_MIN_LETTERS = 15; // don't flag short acronyms as "all caps"
 var NEAR_RATIO = 0.9;         // amber once the caption hits 90% of the limit
@@ -210,7 +228,7 @@ function renderPlatforms() {
           return '<button class="suggestchip' + (i === pickedIdx ? ' picked' : '') + '" type="button" data-idx="' + i + '">' + escHtml(s) + '</button>';
         }).join('') + '</div>'
       : '';
-    var openLabel = p.note ? 'app' : 'upload';
+    var openLabel = INTENT_URLS[p.name] ? 'compose' : (p.note ? 'app' : 'upload');
     var hasPreset = !!(presets[p.name] && presets[p.name].trim());
     card.innerHTML =
       '<div class="pname"><span class="picon">' + p.icon + '</span>' + p.name +
@@ -299,7 +317,7 @@ function renderPlatforms() {
       }).catch(function () {
         toast("Couldn't copy — caption's still in the box");
       });
-      window.open(p.url, "_blank", "noopener");
+      window.open(openUrlFor(p, text), "_blank", "noopener");
       bumpStatus(p.name, "opened");
       refreshStatus();
       saveSession();
@@ -399,6 +417,32 @@ function refreshValidation(card, p) {
 }
 
 loadSession();
+
+// === RECALL → BLAST handoff (first write-channel between the apps) ===
+// RECALL's Top Posts "SEND TO BLAST" leaves a caption here (same-origin
+// localStorage on the github.io deploy). Consumed only when no caption is in
+// progress; otherwise left untouched as a pending import — finish or Reset the
+// current session and reload, and the import happens then.
+var LS_HANDOFF = "blast_handoff_v1";
+function consumeHandoff() {
+  var raw;
+  try { raw = localStorage.getItem(LS_HANDOFF); } catch (e) { return; }
+  if (!raw) return;
+  var h;
+  try { h = JSON.parse(raw); } catch (e) { h = null; }
+  if (!h || typeof h.caption !== "string" || !h.caption.trim()) {
+    try { localStorage.removeItem(LS_HANDOFF); } catch (e) {} // garbage-collect junk
+    return;
+  }
+  var cap = $("#caption");
+  if (!cap || (cap.value || "").trim()) return; // in-progress session — leave the key
+  cap.value = h.caption;
+  try { localStorage.removeItem(LS_HANDOFF); } catch (e) {}
+  saveSession();
+  toast("Caption imported from RECALL");
+}
+consumeHandoff();
+
 renderPlatforms();
 
 var _resetBtn = $("#resetSession");
