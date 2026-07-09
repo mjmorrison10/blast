@@ -9,7 +9,7 @@
 // Gemini for anything beyond a small inlined file, and video specifically
 // is Gemini-only.
 
-var GEMINI_TEXT_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent";
+var GEMINI_TEXT_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
 var GEMINI_FILES_UPLOAD = "https://generativelanguage.googleapis.com/upload/v1beta/files";
 var GEMINI_FILES_BASE = "https://generativelanguage.googleapis.com/v1beta/files";
 var OPENROUTER_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions";
@@ -19,6 +19,53 @@ export var GEMINI_MAX_BYTES = 2 * 1024 * 1024 * 1024;
 export var OPENROUTER_INLINE_MAX_BYTES = 15 * 1024 * 1024;
 
 function yield_() { return new Promise(function (r) { setTimeout(r, 0); }); }
+function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+// === Rate-limit retry ===
+// Free-tier Gemini (and OpenRouter) return HTTP 429 under light load. A single
+// 429 used to fail the whole AI pass; instead retry a few times with backoff,
+// honoring the server's own RetryInfo delay when present.
+var MAX_ATTEMPTS = 3;                      // 1 original + 2 retries
+var RETRY_BACKOFF_MS = [4000, 12000];      // waits before attempt 2, 3
+var RETRY_DELAY_CAP_MS = 20000;            // never wait absurdly long
+
+function parseRetryDelayMs(bodyText) {
+  try {
+    var j = JSON.parse(bodyText);
+    var details = (j && j.error && j.error.details) || [];
+    for (var i = 0; i < details.length; i++) {
+      var d = details[i];
+      if (d && /RetryInfo/.test(d["@type"] || "") && d.retryDelay) {
+        var m = String(d.retryDelay).match(/([\d.]+)s/);
+        if (m) return Math.ceil(parseFloat(m[1]) * 1000);
+      }
+    }
+  } catch (e) {}
+  return null;
+}
+
+// makeRequest: () => Promise<Response>. Retries on HTTP 429 with backoff, then
+// returns the final Response (ok or not) for the caller's own error handling.
+// onRetry(attempt, maxAttempts, waitMs) is optional/best-effort.
+async function fetchWithRetry(makeRequest, onRetry) {
+  for (var attempt = 1; ; attempt++) {
+    var res = await makeRequest();
+    if (res.status !== 429 || attempt >= MAX_ATTEMPTS) return res;
+    var serverDelay = null;
+    try { serverDelay = parseRetryDelayMs(await res.clone().text()); } catch (e) {}
+    var wait = serverDelay != null ? serverDelay : (RETRY_BACKOFF_MS[attempt - 1] || 12000);
+    wait = Math.min(wait, RETRY_DELAY_CAP_MS);
+    if (onRetry) { try { onRetry(attempt, MAX_ATTEMPTS, wait); } catch (e) {} }
+    await sleep(wait);
+  }
+}
+
+function retryReporter(onPhase) {
+  if (!onPhase) return null;
+  return function (attempt, maxAttempts, waitMs) {
+    onPhase("Rate limited — retrying in " + Math.round(waitMs / 1000) + "s (" + attempt + "/" + (maxAttempts - 1) + ")");
+  };
+}
 
 function fileToBase64(file) {
   return new Promise(function (resolve, reject) {
@@ -44,18 +91,20 @@ function guessMime(name) {
 }
 
 // === Gemini Files API (resumable upload, for files > GEMINI_INLINE_MAX_BYTES) ===
-async function uploadToGeminiFilesAPI(file, mime, apiKey) {
-  var startRes = await fetch(GEMINI_FILES_UPLOAD + "?key=" + encodeURIComponent(apiKey), {
-    method: "POST",
-    headers: {
-      "X-Goog-Upload-Protocol": "resumable",
-      "X-Goog-Upload-Command": "start",
-      "X-Goog-Upload-Header-Content-Length": String(file.size),
-      "X-Goog-Upload-Header-Content-Type": mime,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ file: { display_name: file.name } }),
-  });
+async function uploadToGeminiFilesAPI(file, mime, apiKey, onPhase) {
+  var startRes = await fetchWithRetry(function () {
+    return fetch(GEMINI_FILES_UPLOAD + "?key=" + encodeURIComponent(apiKey), {
+      method: "POST",
+      headers: {
+        "X-Goog-Upload-Protocol": "resumable",
+        "X-Goog-Upload-Command": "start",
+        "X-Goog-Upload-Header-Content-Length": String(file.size),
+        "X-Goog-Upload-Header-Content-Type": mime,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ file: { display_name: file.name } }),
+    });
+  }, retryReporter(onPhase));
   if (!startRes.ok) {
     if (startRes.status === 401 || startRes.status === 403) throw new Error("Gemini API key rejected — open Settings");
     if (startRes.status === 429) throw new Error("Rate limited — try again in a minute");
@@ -125,11 +174,13 @@ async function geminiGenerateText(apiKey, opts) {
   var generationConfig = { temperature: opts.temperature != null ? opts.temperature : 0.4 };
   if (opts.jsonMode) generationConfig.responseMimeType = "application/json";
   if (opts.maxTokens) generationConfig.maxOutputTokens = opts.maxTokens;
-  var res = await fetch(GEMINI_TEXT_ENDPOINT + "?key=" + encodeURIComponent(apiKey), {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: opts.prompt }] }], generationConfig: generationConfig }),
-  });
+  var res = await fetchWithRetry(function () {
+    return fetch(GEMINI_TEXT_ENDPOINT + "?key=" + encodeURIComponent(apiKey), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: opts.prompt }] }], generationConfig: generationConfig }),
+    });
+  }, retryReporter(opts.onPhase));
   return extractGeminiText(res);
 }
 
@@ -143,7 +194,7 @@ async function geminiGenerateFromMedia(apiKey, opts) {
   if (useFilesAPI) {
     onPhase("Uploading to Gemini");
     await yield_();
-    var uploaded = await uploadToGeminiFilesAPI(file, mime, apiKey);
+    var uploaded = await uploadToGeminiFilesAPI(file, mime, apiKey, onPhase);
     uploadedFileName = uploaded.name;
     var fileUri = uploaded.uri;
     if (!fileUri) throw new Error("File upload didn't return a URI");
@@ -166,11 +217,13 @@ async function geminiGenerateFromMedia(apiKey, opts) {
     var generationConfig = { temperature: 0.1 };
     if (opts.jsonMode) generationConfig.responseMimeType = "application/json";
     if (opts.maxTokens) generationConfig.maxOutputTokens = opts.maxTokens;
-    var res = await fetch(GEMINI_TEXT_ENDPOINT + "?key=" + encodeURIComponent(apiKey), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ contents: [{ parts: [{ text: opts.prompt }, mediaPart] }], generationConfig: generationConfig }),
-    });
+    var res = await fetchWithRetry(function () {
+      return fetch(GEMINI_TEXT_ENDPOINT + "?key=" + encodeURIComponent(apiKey), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ contents: [{ parts: [{ text: opts.prompt }, mediaPart] }], generationConfig: generationConfig }),
+      });
+    }, retryReporter(onPhase));
     return await extractGeminiText(res);
   } finally {
     if (uploadedFileName) await deleteGeminiFile(uploadedFileName, apiKey);
@@ -195,6 +248,9 @@ async function extractOpenrouterText(res) {
     var body = await res.text().catch(function () { return ""; });
     if (res.status === 401) throw new Error("OpenRouter API key rejected — open Settings");
     if (res.status === 429) throw new Error("Rate limited — try again in a minute");
+    if (res.status === 404 || /no endpoints found/i.test(body)) {
+      throw new Error("This model is no longer available on OpenRouter — pick another in Settings.");
+    }
     throw new Error("OpenRouter error " + res.status + ": " + body.slice(0, 150));
   }
   var json = await res.json();
@@ -211,7 +267,9 @@ async function openrouterGenerateText(apiKey, model, opts) {
   var body = { model: model, messages: [{ role: "user", content: opts.prompt }], temperature: opts.temperature != null ? opts.temperature : 0.4 };
   if (opts.jsonMode) body.response_format = { type: "json_object" };
   if (opts.maxTokens) body.max_tokens = opts.maxTokens;
-  var res = await fetch(OPENROUTER_ENDPOINT, { method: "POST", headers: openrouterHeaders(apiKey), body: JSON.stringify(body) });
+  var res = await fetchWithRetry(function () {
+    return fetch(OPENROUTER_ENDPOINT, { method: "POST", headers: openrouterHeaders(apiKey), body: JSON.stringify(body) });
+  }, retryReporter(opts.onPhase));
   return extractOpenrouterText(res);
 }
 
@@ -244,7 +302,9 @@ async function openrouterGenerateFromMedia(apiKey, model, opts) {
   var body = { model: model, messages: [{ role: "user", content: content }], temperature: 0.1 };
   if (opts.jsonMode) body.response_format = { type: "json_object" };
   if (opts.maxTokens) body.max_tokens = opts.maxTokens;
-  var res = await fetch(OPENROUTER_ENDPOINT, { method: "POST", headers: openrouterHeaders(apiKey), body: JSON.stringify(body) });
+  var res = await fetchWithRetry(function () {
+    return fetch(OPENROUTER_ENDPOINT, { method: "POST", headers: openrouterHeaders(apiKey), body: JSON.stringify(body) });
+  }, retryReporter(onPhase));
   return extractOpenrouterText(res);
 }
 
