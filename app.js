@@ -122,6 +122,33 @@ function resetSession() {
   var cap = document.querySelector("#caption");
   if (cap) cap.value = "";
   try { localStorage.removeItem(LS_SESSION); } catch (e) {}
+  // NOTE: presets deliberately survive Reset — they're a durable per-creator
+  // habit, not part of a single posting session.
+}
+
+// === Per-platform presets (localStorage, independent of the session) ===
+// A saved caption template per platform, with a {caption} token substituted
+// for the current base caption. Stored as a single blob keyed by platform name
+// (same shape idea as settings), separate from blast_session_v1 so it persists
+// across clips and survives Reset.
+var LS_PRESETS = "blast_presets_v1";
+function loadPresets() {
+  try { return JSON.parse(localStorage.getItem(LS_PRESETS)) || {}; }
+  catch (e) { return {}; }
+}
+function savePresets(o) {
+  try { localStorage.setItem(LS_PRESETS, JSON.stringify(o)); return true; }
+  catch (e) { return false; }
+}
+var presets = loadPresets();
+
+// split/join (not .replace) so a "$" in the base caption isn't treated as a
+// replacement pattern, and every {caption} occurrence is substituted.
+function applyTemplate(tpl, base) {
+  return String(tpl).split("{caption}").join(base);
+}
+function currentBase() {
+  return (($("#caption") || {}).value || "").trim();
 }
 
 // Suggestion text comes from a model response — escape before it ever goes
@@ -184,10 +211,16 @@ function renderPlatforms() {
         }).join('') + '</div>'
       : '';
     var openLabel = p.note ? 'app' : 'upload';
+    var hasPreset = !!(presets[p.name] && presets[p.name].trim());
     card.innerHTML =
       '<div class="pname"><span class="picon">' + p.icon + '</span>' + p.name +
       (p.note ? ' <span style="color:var(--faint);font-weight:400;font-size:11px">(' + p.note + ')</span>' : '') +
+      '<button class="presetedit" type="button" aria-label="Edit preset" title="Edit preset">✎</button>' +
       '<span class="statuschip" data-status="' + st + '">' + STATUS_LABEL[st] + '</span>' +
+      '</div>' +
+      '<div class="presetpanel hidden">' +
+      '<textarea class="presetinput" rows="2" placeholder="Template with {caption} — newlines OK (e.g. hashtag block, sign-off)">' + escHtml(presets[p.name] || "") + '</textarea>' +
+      '<button class="btn ghost presetsave" type="button">Save</button>' +
       '</div>' +
       suggestionsHtml +
       '<textarea class="pcaption" placeholder="Same as base caption until you Adapt, or type your own">' + escHtml(platformCaptions[p.name] || "") + '</textarea>' +
@@ -196,6 +229,7 @@ function renderPlatforms() {
       '<button class="btn primary copyopenbtn" type="button">Copy + open ' + openLabel + ' →</button>' +
       '<button class="btn ghost copybtn" type="button">Copy only</button>' +
       '</div>' +
+      (hasPreset ? '<div class="prow presetrow"><button class="btn ghost applypreset" type="button">Apply preset</button></div>' : '') +
       '<div class="prow statusrow">' +
       '<button class="btn ghost markposted" type="button">✓ Mark posted</button>' +
       '<button class="btn ghost markskip" type="button">Skip</button>' +
@@ -204,6 +238,36 @@ function renderPlatforms() {
 
     var pcaption = card.querySelector(".pcaption");
     var posturl = card.querySelector(".posturl");
+
+    // Preset editor: the ✎ toggles an inline template field (classList only,
+    // no re-render, so it never blurs a caption mid-edit).
+    var presetBtn = card.querySelector(".presetedit");
+    var presetPanel = card.querySelector(".presetpanel");
+    var presetInput = card.querySelector(".presetinput");
+    var presetSave = card.querySelector(".presetsave");
+    var applyBtn = card.querySelector(".applypreset"); // null unless a preset exists
+    presetBtn.addEventListener("click", function () {
+      presetPanel.classList.toggle("hidden");
+      if (!presetPanel.classList.contains("hidden")) presetInput.focus();
+    });
+    presetSave.addEventListener("click", function () {
+      var val = presetInput.value.trim();
+      if (val) presets[p.name] = val; else delete presets[p.name];
+      savePresets(presets);
+      toast(val ? "Preset saved for " + p.name : "Preset cleared for " + p.name);
+      renderPlatforms(); // re-render so the "Apply preset" button appears/disappears
+    });
+    // Apply this platform's template to the current base caption — mirrors the
+    // Adapt flow: write platformCaptions, re-render, save.
+    if (applyBtn) {
+      applyBtn.addEventListener("click", function () {
+        platformCaptions[p.name] = applyTemplate(presets[p.name], currentBase());
+        delete platformPickedIdx[p.name];
+        renderPlatforms();
+        saveSession();
+        toast("Preset applied to " + p.name);
+      });
+    }
 
     pcaption.addEventListener("input", function () {
       platformCaptions[p.name] = pcaption.value;
@@ -541,6 +605,25 @@ $("#adaptBtn").addEventListener("click", async function () {
     btn.disabled = false;
     btn.textContent = "Adapt for each platform →";
   }
+});
+
+// Apply every saved preset to the current base caption at once. Explicit only —
+// never auto-applies. Skips platforms without a preset.
+$("#applyAllPresets").addEventListener("click", function () {
+  var base = currentBase();
+  var n = 0;
+  PLATFORMS.forEach(function (p) {
+    var tpl = presets[p.name];
+    if (tpl && tpl.trim()) {
+      platformCaptions[p.name] = applyTemplate(tpl, base);
+      delete platformPickedIdx[p.name];
+      n++;
+    }
+  });
+  if (!n) { toast("No presets saved yet"); return; }
+  renderPlatforms();
+  saveSession();
+  toast("Applied " + n + " preset" + (n > 1 ? "s" : ""));
 });
 
 // === Suggest captions from video (vision watches it directly, Gemini-only;

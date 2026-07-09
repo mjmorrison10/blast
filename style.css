@@ -147,7 +147,7 @@ textarea#caption:focus{outline:none;border-color:var(--brand)}
 .platformcard.status-opened{border-left-color:var(--brand)}
 .platformcard.status-posted{border-left-color:var(--pos)}
 .platformcard.status-skipped{opacity:.6}
-.statuschip{margin-left:auto;font-family:var(--mono);font-size:9.5px;font-weight:600;
+.statuschip{margin-left:0;font-family:var(--mono);font-size:9.5px;font-weight:600;
   letter-spacing:.06em;text-transform:uppercase;border-radius:20px;padding:2px 8px;
   background:var(--ground);color:var(--faint);border:1px solid var(--border);white-space:nowrap}
 .statuschip[data-status="copied"]{color:var(--muted)}
@@ -166,6 +166,18 @@ textarea#caption:focus{outline:none;border-color:var(--brand)}
 .valwarn.hidden{display:none}
 .platformcard .pcaption.invalid,
 .platformcard .pcaption.invalid:focus{border-color:var(--danger)}
+
+/* per-platform presets */
+.presetedit{margin-left:auto;background:none;border:none;color:var(--faint);cursor:pointer;
+  font-size:13px;line-height:1;padding:0 2px}
+.presetedit:hover{color:var(--brand)}
+.platformcard .presetpanel{display:flex;gap:6px;align-items:flex-start;margin-bottom:10px}
+.platformcard .presetpanel.hidden{display:none}
+.presetinput{flex:1;min-width:0;min-height:40px;background:var(--ground);border:1px solid var(--border);border-radius:8px;
+  padding:7px 10px;color:var(--ink);font-family:var(--mono);font-size:11px;line-height:1.4;resize:vertical}
+.presetinput:focus{outline:none;border-color:var(--brand)}
+.platformcard .presetpanel .presetsave{flex:none;font-size:10.5px;padding:7px 12px}
+.platformcard .presetrow .applypreset{font-size:10.5px}
 .platformcard .posturl{width:100%;margin-top:8px;background:var(--ground);border:1px solid var(--border);
   border-radius:8px;padding:7px 10px;color:var(--ink);font-family:var(--mono);font-size:11px}
 .platformcard .posturl:focus{outline:none;border-color:var(--brand)}
