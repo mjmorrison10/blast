@@ -206,6 +206,9 @@ textarea#caption:focus{outline:none;border-color:var(--brand)}
   display:flex;gap:16px;align-items:center;flex-wrap:wrap}
 .foot .fname{font-weight:600;font-size:14.5px}
 .foot .ftag{color:var(--muted);font-size:12.5px;max-width:56ch;line-height:1.5;margin-top:3px}
+.foot .flinks{margin-top:6px;font-size:12px;color:var(--muted)}
+.foot .flinks a{color:var(--brand);text-decoration:none}
+.foot .flinks a:hover{text-decoration:underline}
 .foot .fcta{margin-left:auto;font-family:var(--mono);font-size:12px;color:var(--brand);
   text-decoration:none;border:1px solid var(--brand-ghost);padding:9px 14px;border-radius:9px}
 
