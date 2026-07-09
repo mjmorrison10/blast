@@ -5,23 +5,28 @@
 BLAST is the posting command center of the creator ops stack — RECALL finds it, HOOKLAB underwrites
 the open, BLAST gets it out the door. Write a caption, get it tailored per platform
 (or let AI suggest captions straight from your video), and jump to each platform's upload page —
-YouTube Shorts, TikTok, Instagram Reels, Snapchat Spotlight, Facebook Reels, X, LinkedIn, and
-Pinterest. Optionally reformat a clip to 9:16 first, entirely in your browser.
+YouTube Shorts, TikTok, Instagram Reels, Snapchat Spotlight, Facebook Reels, X, Threads,
+LinkedIn, and Pinterest. Optionally reformat a clip to 9:16 first, entirely in your browser.
 
 ## What it does today
 
-1. **Caption once, post everywhere** — write a base caption, jump straight to each of the 8
+1. **Caption once, post everywhere** — write a base caption, jump straight to each of the 9
    platforms' upload pages. This works with zero upload; it's the primary flow, not gated behind
    anything else.
    - **Posting session tracker** — each platform shows a status (not started → caption copied →
      upload opened → posted, or skipped), and the whole session — base caption, per-platform
      captions, AI suggestions, status, and live post URLs — is saved to your browser so a refresh
-     or a closed tab doesn't lose it. A progress bar shows how many of the 8 you've actually posted.
+     or a closed tab doesn't lose it. A progress bar shows how many of the 9 you've actually posted.
      This is what makes BLAST a tracker rather than a bookmark folder: even with all your upload
      tabs already open, it's the one place that remembers where a clip has and hasn't gone.
    - **Copy + open in one click** — the primary button on each platform copies that platform's
-     caption, opens its upload page, and marks it "opened" in a single action. "Copy only" and
+     caption, opens its upload page, and marks it "opened" in a single action. On **X and Threads**
+     the compose window opens with the caption **already prefilled** (clipboard copy still happens
+     first as the backup). "Copy only" and
      manual "mark posted / skip" are there too. Pasting a live post URL auto-marks it posted.
+   - **RECALL import** — RECALL's Top Posts "SEND TO BLAST" hands a composed caption straight
+     into BLAST (same-browser handoff). It's imported only when you don't already have a caption
+     in progress — an in-flight session is never overwritten.
 2. **Adapt for each platform** — one AI call rewrites your base caption per platform's real
    conventions (length, hashtag style, tone). Each platform gets its own editable result.
 3. **Platform presets** — save a caption template per platform once, so recurring patterns (a
