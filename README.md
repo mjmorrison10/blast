@@ -24,13 +24,26 @@ Pinterest. Optionally reformat a clip to 9:16 first, entirely in your browser.
      manual "mark posted / skip" are there too. Pasting a live post URL auto-marks it posted.
 2. **Adapt for each platform** — one AI call rewrites your base caption per platform's real
    conventions (length, hashtag style, tone). Each platform gets its own editable result.
-3. **Suggest captions from video** — upload your edited clip and get AI-proposed captions instead
+3. **Platform presets** — save a caption template per platform once, so recurring patterns (a
+   TikTok hashtag block, a LinkedIn sign-off, an "in bio" line) don't need retyping on every clip.
+   Click the ✎ on a platform card, write a template with a `{caption}` token (multi-line is fine),
+   and Save. Then **Apply preset** on that card — or **Apply all presets** next to Adapt —
+   substitutes `{caption}` with your current base caption. It never auto-applies and never
+   overwrites an adapted or hand-edited caption unless you click, so it composes with Adapt rather
+   than fighting it. Presets are stored in your browser (`blast_presets_v1`), independent of the
+   posting session, so they persist across clips and survive a session reset. Zero AI cost.
+4. **Caption validation** — each platform card shows a live character counter against that
+   platform's real limit (amber as you approach it, red when you're over), plus soft warnings for
+   too many hashtags, ALL-CAPS, and excessive emoji. Everything is advisory — it catches the
+   "wrong caption to the wrong platform" mistake before you open the upload tab, but it never blocks
+   a copy or disables a button. Static rules, no AI.
+5. **Suggest captions from video** — upload your edited clip and get AI-proposed captions instead
    of writing one from scratch, with a choice of how many options per platform (1, 3, or 5):
    - **Watch the video** (Gemini only) — the model watches the actual clip (visuals + audio).
    - **From transcript** (any provider) — transcribes first, then writes captions from that. For an
      actual video *file*, this still needs Gemini for now — there's no path to read a video's audio
      track through OpenRouter yet, even for transcription only.
-4. **Reformat to 9:16** (optional) — crops and scales to a centered vertical clip, entirely in your
+6. **Reformat to 9:16** (optional) — crops and scales to a centered vertical clip, entirely in your
    browser via [ffmpeg.wasm](https://ffmpegwasm.netlify.app/). Nothing is uploaded to a server. Not
    required to use any of the caption/platform features above — useful only if you need a quick crop
    without opening editing software.

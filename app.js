@@ -36,6 +36,28 @@ var PLATFORMS = [
   { icon: "📌", name: "Pinterest", url: "https://www.pinterest.com/pin-builder/" },
 ];
 
+// Per-platform caption rules for soft validation (never a hard block — these
+// only drive a live counter + warnings). `limit` is the practical caption
+// character cap; `hashtagMax` is a recommended-not-enforced ceiling.
+// Notes on the fuzzier ones: YouTube Shorts caps the *title* (the text shown
+// under a Short) at 100 — the 5000-char description is a separate box BLAST
+// doesn't model, so 100 is the limiting field. Snapchat Spotlight captions are
+// a short overlay, so 80 is a deliberately conservative cap.
+var PLATFORM_RULES = {
+  "YouTube Shorts":     { limit: 100,  hashtagMax: 3 },
+  "TikTok":             { limit: 2200, hashtagMax: 5 },
+  "Instagram Reels":    { limit: 2200, hashtagMax: 10 },
+  "Snapchat Spotlight": { limit: 80,   hashtagMax: 3 },
+  "Facebook Reels":     { limit: 2200, hashtagMax: 5 },
+  "X":                  { limit: 280,  hashtagMax: 2 },
+  "LinkedIn":           { limit: 3000, hashtagMax: 5 },
+  "Pinterest":          { limit: 500,  hashtagMax: 5 },
+};
+var DEFAULT_RULES = { limit: 2200, hashtagMax: 10 };
+var EMOJI_MAX = 8;            // more than this reads as spammy
+var ALLCAPS_MIN_LETTERS = 15; // don't flag short acronyms as "all caps"
+var NEAR_RATIO = 0.9;         // amber once the caption hits 90% of the limit
+
 // Per-platform caption overrides, filled in by "Adapt for each platform" or
 // "Suggest captions from video" (or left blank to fall back to the shared
 // base caption). Keyed by platform name.
@@ -100,6 +122,33 @@ function resetSession() {
   var cap = document.querySelector("#caption");
   if (cap) cap.value = "";
   try { localStorage.removeItem(LS_SESSION); } catch (e) {}
+  // NOTE: presets deliberately survive Reset — they're a durable per-creator
+  // habit, not part of a single posting session.
+}
+
+// === Per-platform presets (localStorage, independent of the session) ===
+// A saved caption template per platform, with a {caption} token substituted
+// for the current base caption. Stored as a single blob keyed by platform name
+// (same shape idea as settings), separate from blast_session_v1 so it persists
+// across clips and survives Reset.
+var LS_PRESETS = "blast_presets_v1";
+function loadPresets() {
+  try { return JSON.parse(localStorage.getItem(LS_PRESETS)) || {}; }
+  catch (e) { return {}; }
+}
+function savePresets(o) {
+  try { localStorage.setItem(LS_PRESETS, JSON.stringify(o)); return true; }
+  catch (e) { return false; }
+}
+var presets = loadPresets();
+
+// split/join (not .replace) so a "$" in the base caption isn't treated as a
+// replacement pattern, and every {caption} occurrence is substituted.
+function applyTemplate(tpl, base) {
+  return String(tpl).split("{caption}").join(base);
+}
+function currentBase() {
+  return (($("#caption") || {}).value || "").trim();
 }
 
 // Suggestion text comes from a model response — escape before it ever goes
@@ -115,6 +164,32 @@ function escHtml(s) {
 function captionFor(p, pcaptionEl) {
   var own = pcaptionEl ? pcaptionEl.value : platformCaptions[p.name];
   return ((own || "").trim() || ($("#caption").value || "")).trim();
+}
+
+// Pure, cheap, zero-AI caption check. All findings are advisory — nothing here
+// ever blocks a copy or disables a button. Returns counts + a `messages` list.
+function validate(caption, rules) {
+  rules = rules || DEFAULT_RULES;
+  var text = caption || "";
+  var count = text.length;
+  var limit = rules.limit;
+  var over = count > limit;
+  var near = !over && count >= Math.round(limit * NEAR_RATIO);
+  var hashtagCount = (text.match(/#[\p{L}0-9_]+/gu) || []).length;
+  var hashtagOver = hashtagCount > rules.hashtagMax;
+  var letters = (text.match(/\p{L}/gu) || []).length;
+  var allCaps = letters >= ALLCAPS_MIN_LETTERS &&
+    text === text.toUpperCase() && text !== text.toLowerCase();
+  var emojiCount = (text.match(/\p{Extended_Pictographic}/gu) || []).length;
+  var emojiExcess = emojiCount > EMOJI_MAX;
+  var messages = [];
+  if (over) messages.push((count - limit) + " over limit");
+  if (hashtagOver) messages.push(hashtagCount + " hashtags (max ~" + rules.hashtagMax + ")");
+  if (allCaps) messages.push("all caps");
+  if (emojiExcess) messages.push(emojiCount + " emoji");
+  return { count: count, limit: limit, over: over, near: near,
+    hashtagCount: hashtagCount, hashtagOver: hashtagOver,
+    allCaps: allCaps, emojiExcess: emojiExcess, messages: messages };
 }
 
 function copyText(text) {
@@ -136,17 +211,25 @@ function renderPlatforms() {
         }).join('') + '</div>'
       : '';
     var openLabel = p.note ? 'app' : 'upload';
+    var hasPreset = !!(presets[p.name] && presets[p.name].trim());
     card.innerHTML =
       '<div class="pname"><span class="picon">' + p.icon + '</span>' + p.name +
       (p.note ? ' <span style="color:var(--faint);font-weight:400;font-size:11px">(' + p.note + ')</span>' : '') +
+      '<button class="presetedit" type="button" aria-label="Edit preset" title="Edit preset">✎</button>' +
       '<span class="statuschip" data-status="' + st + '">' + STATUS_LABEL[st] + '</span>' +
+      '</div>' +
+      '<div class="presetpanel hidden">' +
+      '<textarea class="presetinput" rows="2" placeholder="Template with {caption} — newlines OK (e.g. hashtag block, sign-off)">' + escHtml(presets[p.name] || "") + '</textarea>' +
+      '<button class="btn ghost presetsave" type="button">Save</button>' +
       '</div>' +
       suggestionsHtml +
       '<textarea class="pcaption" placeholder="Same as base caption until you Adapt, or type your own">' + escHtml(platformCaptions[p.name] || "") + '</textarea>' +
+      '<div class="pmeta"><span class="valcount" data-level="ok"></span><span class="valwarn hidden"></span></div>' +
       '<div class="prow">' +
       '<button class="btn primary copyopenbtn" type="button">Copy + open ' + openLabel + ' →</button>' +
       '<button class="btn ghost copybtn" type="button">Copy only</button>' +
       '</div>' +
+      (hasPreset ? '<div class="prow presetrow"><button class="btn ghost applypreset" type="button">Apply preset</button></div>' : '') +
       '<div class="prow statusrow">' +
       '<button class="btn ghost markposted" type="button">✓ Mark posted</button>' +
       '<button class="btn ghost markskip" type="button">Skip</button>' +
@@ -156,11 +239,42 @@ function renderPlatforms() {
     var pcaption = card.querySelector(".pcaption");
     var posturl = card.querySelector(".posturl");
 
+    // Preset editor: the ✎ toggles an inline template field (classList only,
+    // no re-render, so it never blurs a caption mid-edit).
+    var presetBtn = card.querySelector(".presetedit");
+    var presetPanel = card.querySelector(".presetpanel");
+    var presetInput = card.querySelector(".presetinput");
+    var presetSave = card.querySelector(".presetsave");
+    var applyBtn = card.querySelector(".applypreset"); // null unless a preset exists
+    presetBtn.addEventListener("click", function () {
+      presetPanel.classList.toggle("hidden");
+      if (!presetPanel.classList.contains("hidden")) presetInput.focus();
+    });
+    presetSave.addEventListener("click", function () {
+      var val = presetInput.value.trim();
+      if (val) presets[p.name] = val; else delete presets[p.name];
+      savePresets(presets);
+      toast(val ? "Preset saved for " + p.name : "Preset cleared for " + p.name);
+      renderPlatforms(); // re-render so the "Apply preset" button appears/disappears
+    });
+    // Apply this platform's template to the current base caption — mirrors the
+    // Adapt flow: write platformCaptions, re-render, save.
+    if (applyBtn) {
+      applyBtn.addEventListener("click", function () {
+        platformCaptions[p.name] = applyTemplate(presets[p.name], currentBase());
+        delete platformPickedIdx[p.name];
+        renderPlatforms();
+        saveSession();
+        toast("Preset applied to " + p.name);
+      });
+    }
+
     pcaption.addEventListener("input", function () {
       platformCaptions[p.name] = pcaption.value;
       delete platformPickedIdx[p.name];
       card.querySelectorAll(".suggestchip").forEach(function (c) { c.classList.remove("picked"); });
       saveSession();
+      refreshValidation(card, p);
     });
     card.querySelectorAll(".suggestchip").forEach(function (chip) {
       chip.addEventListener("click", function () {
@@ -222,6 +336,10 @@ function renderPlatforms() {
     });
     posturl.addEventListener("change", refreshStatus);
 
+    // Initial pass so the counter is correct on every render path (load, Adapt,
+    // Suggest, Apply preset, Apply all, Reset) with no extra call sites.
+    refreshValidation(card, p);
+
     wrap.appendChild(card);
   });
   refreshStatus();
@@ -254,6 +372,30 @@ function refreshStatus() {
   }
   var bar = $("#sessionProgress");
   if (bar) bar.style.setProperty("--pct", Math.round((done / PLATFORMS.length) * 100) + "%");
+}
+
+// Surgical, per-card — same discipline as refreshStatus: update only the
+// counter/warning elements on keystroke, never re-render the card (which would
+// blur the field mid-edit). Reads the resolved caption (own value, else base).
+function refreshValidation(card, p) {
+  var pcaption = card.querySelector(".pcaption");
+  var valcount = card.querySelector(".valcount");
+  var valwarn = card.querySelector(".valwarn");
+  if (!pcaption || !valcount) return;
+  var text = (pcaption.value || "").trim() || ($("#caption").value || "").trim();
+  var r = validate(text, PLATFORM_RULES[p.name]);
+  valcount.textContent = r.count + " / " + r.limit;
+  valcount.setAttribute("data-level", r.over ? "over" : r.near ? "near" : "ok");
+  pcaption.classList.toggle("invalid", r.over);
+  // The over-limit count is already shown in the counter chip; only surface the
+  // other advisories here to avoid saying the same thing twice.
+  var warns = r.messages.filter(function (m) { return m.indexOf("over limit") === -1; });
+  if (warns.length) {
+    valwarn.textContent = "⚠ " + warns.join(" · ");
+    valwarn.classList.remove("hidden");
+  } else {
+    valwarn.classList.add("hidden");
+  }
 }
 
 loadSession();
@@ -463,6 +605,25 @@ $("#adaptBtn").addEventListener("click", async function () {
     btn.disabled = false;
     btn.textContent = "Adapt for each platform →";
   }
+});
+
+// Apply every saved preset to the current base caption at once. Explicit only —
+// never auto-applies. Skips platforms without a preset.
+$("#applyAllPresets").addEventListener("click", function () {
+  var base = currentBase();
+  var n = 0;
+  PLATFORMS.forEach(function (p) {
+    var tpl = presets[p.name];
+    if (tpl && tpl.trim()) {
+      platformCaptions[p.name] = applyTemplate(tpl, base);
+      delete platformPickedIdx[p.name];
+      n++;
+    }
+  });
+  if (!n) { toast("No presets saved yet"); return; }
+  renderPlatforms();
+  saveSession();
+  toast("Applied " + n + " preset" + (n > 1 ? "s" : ""));
 });
 
 // === Suggest captions from video (vision watches it directly, Gemini-only;
