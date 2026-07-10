@@ -110,6 +110,10 @@ input:focus,select:focus,textarea:focus{border-color:var(--brand)}
 .post .sub a:hover{text-decoration:underline}
 .post .x{margin-left:auto;background:none;border:none;color:var(--faint);cursor:pointer;font-size:16px;line-height:1;padding:2px 4px}
 .post .x:hover{color:var(--danger)}
+.postactions{margin-left:auto;display:flex;gap:4px;flex:none}
+.postact{background:none;border:none;color:var(--faint);cursor:pointer;font-family:var(--mono);font-size:10.5px;letter-spacing:.03em;line-height:1;padding:3px 5px;border-radius:6px;white-space:nowrap}
+.postact:hover{color:var(--muted);background:var(--ground)}
+.postact.danger:hover{color:var(--danger);background:var(--danger-ghost)}
 
 .metrics{display:flex;gap:14px;flex-wrap:wrap;margin:12px 0 4px;align-items:flex-end}
 .metric{display:flex;flex-direction:column;gap:1px}
