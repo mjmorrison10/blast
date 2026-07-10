@@ -519,6 +519,9 @@ function loadSettings() {
     if (s.openrouterModel && DEAD_OR_MODELS.indexOf(s.openrouterModel) >= 0) {
       s.openrouterModel = DEFAULT_OR_MODEL;
     }
+    // Keys are shared across the stack: shared store wins; legacy local key
+    // promoted into the shared store on first read.
+    if (window.StackData) s = window.StackData.resolveKeys(s, ["geminiKey", "openrouterKey", "openrouterModel"]);
     return s;
   }
   catch (e) { return {}; }
@@ -627,6 +630,9 @@ $("#keysave").addEventListener("click", function () {
     openrouterModel: ormodel.value.trim() || DEFAULT_OR_MODEL,
   });
   if (saved) {
+    if (window.StackData) window.StackData.writeSharedKeys({
+      geminiKey: gk, openrouterKey: ok, openrouterModel: ormodel.value.trim() || DEFAULT_OR_MODEL,
+    });
     toast("Settings saved");
     closeSettings();
   } else {
@@ -640,19 +646,34 @@ $("#keyclear").addEventListener("click", function () {
     s.openrouterKey = "";
     orkeystatus.textContent = "No key saved.";
     orkeystatus.className = "keystatus empty";
+    if (window.StackData) window.StackData.clearSharedKey("openrouterKey");
   } else {
     gemkey.value = "";
     s.geminiKey = "";
     keystatus.textContent = "No key saved.";
     keystatus.className = "keystatus empty";
+    if (window.StackData) window.StackData.clearSharedKey("geminiKey");
   }
   saveSettingsObj(s);
-  toast("Key cleared");
+  toast("Key cleared everywhere");
 });
 $("#keycancel").addEventListener("click", closeSettings);
 settingscrim.addEventListener("click", function (e) { if (e.target === settingscrim) closeSettings(); });
 $("#settings").addEventListener("click", openSettings);
 $("#openSettingsFromHint").addEventListener("click", openSettings);
+
+// Whole-stack backup (all 4 apps)
+if (window.StackData) {
+  $("#stackexport").addEventListener("click", function () {
+    window.StackData.exportToFile().then(function () { toast("Stack backup downloaded"); });
+  });
+  $("#stackimport").addEventListener("click", function () { $("#stackfile").click(); });
+  $("#stackfile").addEventListener("change", function (e) {
+    var f = e.target.files && e.target.files[0];
+    if (f) window.StackData.importFromFile(f, toast);
+    e.target.value = "";
+  });
+}
 document.addEventListener("keydown", function (e) {
   if (e.key === "Escape" && settingscrim.classList.contains("open")) closeSettings();
 });

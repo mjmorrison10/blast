@@ -209,6 +209,20 @@
           isn't supported here — switch to Gemini for that.
           <a href="https://openrouter.ai/keys" target="_blank" rel="noopener">Get a key at openrouter.ai</a>.</p>
       </div>
+
+      <p class="hint" style="margin-top:4px;color:var(--brand)">🔗 API keys are shared across RECALL,
+        HOOKLAB, BLAST, and PULSE on this device — enter once, works everywhere.</p>
+
+      <div style="border-top:1px solid var(--border);margin-top:14px;padding-top:14px">
+        <label>Whole-stack backup</label>
+        <p class="hint" style="margin:6px 0 10px">One file that backs up all four apps on this device
+          (RECALL library, HOOKLAB ledger, BLAST sessions/presets, PULSE posts, shared keys).</p>
+        <div class="keyrow">
+          <button class="btn ghost" id="stackexport" type="button">Export stack backup</button>
+          <button class="btn ghost" id="stackimport" type="button">Import…</button>
+          <input type="file" id="stackfile" accept="application/json,.json" style="display:none">
+        </div>
+      </div>
     </div>
     <div class="mfoot">
       <button class="btn ghost" id="keyclear">Clear this key</button>
@@ -220,6 +234,7 @@
 
 <div class="toast" id="toast"></div>
 
+<script src="stackdata.js"></script>
 <script type="module" src="app.js"></script>
 
 </body>

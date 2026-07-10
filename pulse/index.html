@@ -83,6 +83,9 @@
         <button class="iconbtn" id="exportBtn" title="Download a JSON backup">EXPORT</button>
         <button class="iconbtn" id="importFileBtn" title="Restore from a JSON backup">IMPORT</button>
         <input type="file" id="importFile" accept="application/json,.json" style="display:none">
+        <button class="iconbtn" id="stackexport" title="Back up all 4 apps (RECALL, HOOKLAB, BLAST, PULSE) in one file">STACK BACKUP</button>
+        <button class="iconbtn" id="stackimport" title="Restore all 4 apps from a stack backup">STACK RESTORE</button>
+        <input type="file" id="stackfile" accept="application/json,.json" style="display:none">
       </div>
     </div>
     <div id="posts"></div>
@@ -111,6 +114,7 @@
           <button id="ytkeyshow" type="button">show</button>
         </div>
         <div class="keystatus empty" id="ytkeystatus">No key saved.</div>
+        <p class="hint" style="margin-top:8px;color:var(--brand)">🔗 API keys are shared across RECALL, HOOKLAB, BLAST, and PULSE on this device — save a key in any one and the others pick it up.</p>
         <p class="hint keyhint" style="margin-top:8px">Stored only in this browser's localStorage and sent
           only to Google. With a key, PULSE pulls view/like/comment counts for YouTube links automatically.
           Other platforms (TikTok, IG, etc.) have no public per-video API, so those are quick manual entries.
@@ -128,6 +132,7 @@
 
 <div class="toast" id="toast"></div>
 
+<script src="stackdata.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
