@@ -185,6 +185,22 @@
     return true;
   }
 
+  // Remove this post's PULSE-written entry from the HOOKLAB ledger. Matches on
+  // the deterministic id "pulse_<post.id>", so it can never touch a
+  // HOOKLAB-native entry. Returns true if an entry was actually removed.
+  function deleteLedgerEntry(post) {
+    var raw = null; try { raw = localStorage.getItem(LS_HOOKLAB); } catch (e) { return false; }
+    if (!raw) return false;
+    var st; try { st = JSON.parse(raw); } catch (e) { return false; }
+    if (!st || !st.ledger || !st.ledger.length) return false;
+    var wanted = "pulse_" + post.id;
+    var before = st.ledger.length;
+    st.ledger = st.ledger.filter(function (e) { return !(e && e.id === wanted); });
+    if (st.ledger.length === before) return false;
+    try { localStorage.setItem(LS_HOOKLAB, JSON.stringify(st)); return true; }
+    catch (e) { return false; }
+  }
+
   // ---------- import from BLAST ----------
   function makePost(platform, url, caption, postedAt) {
     return { id: uid(), platform: platform, url: url, caption: caption || "",
@@ -279,7 +295,10 @@
         '<div class="sub"><a href="' + esc(post.url) + '" target="_blank" rel="noopener">open post ↗</a>' +
         '<span>posted ' + relTime(post.postedAt) + '</span>' +
         (yt ? '<span class="pilltag">youtube auto</span>' : '<span class="pilltag">manual</span>') + '</div></div>' +
-        '<button class="x" data-act="del" data-id="' + post.id + '" title="Stop tracking">×</button></div>';
+        '<div class="postactions">' +
+        '<button class="postact" data-act="del" data-id="' + post.id + '" title="Stop tracking — keeps its HOOKLAB ledger entry">Stop tracking</button>' +
+        '<button class="postact danger" data-act="delall" data-id="' + post.id + '" title="Delete this post and its HOOKLAB ledger entry">Delete</button>' +
+        '</div></div>';
 
       var snaprow = '<div class="snaprow">' +
         (yt ? '<button class="btn ghost" data-act="check" data-id="' + post.id + '">Check now</button>' : '') +
@@ -305,7 +324,15 @@
       var act = el.getAttribute("data-act");
       el.addEventListener("click", function () {
         var post = findPost(id); if (!post) return;
-        if (act === "del") { if (confirm("Stop tracking this post? (Its HOOKLAB ledger entry, if logged, stays.)")) { posts = posts.filter(function (p) { return p.id !== id; }); savePosts(); render(); } }
+        if (act === "del") { if (confirm("Stop tracking this post? (Its HOOKLAB ledger entry, if logged, stays.)")) { posts = posts.filter(function (p) { return p.id !== id; }); savePosts(); render(); toast("Stopped tracking"); } }
+        else if (act === "delall") {
+          var wasLogged = !!post.ledgerLoggedAt;
+          if (!confirm("Delete this post everywhere?" + (wasLogged ? " Its HOOKLAB ledger entry is removed too." : ""))) return;
+          posts = posts.filter(function (p) { return p.id !== id; }); savePosts();
+          var removed = deleteLedgerEntry(post);
+          render();
+          toast(removed ? "Deleted here and from the HOOKLAB ledger" : "Deleted");
+        }
         else if (act === "check") { checkYouTube(post, { loud: true }).then(function (ok) { if (ok) { render(); toast("Updated from YouTube"); } }); }
         else if (act === "rec") { recordManual(post); }
         else if (act === "focusrec") { var inp = $("#snap-" + id); if (inp) inp.focus(); }
