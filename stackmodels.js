@@ -38,10 +38,25 @@
     { pat: "grok-4.1",          score: 1466 },
   ];
 
+  // Active ranking. Starts as the embedded ARENA fallback, then gets replaced by
+  // arena-ranking.json (regenerated weekly by the repo's refresh-leaderboard
+  // GitHub Action) once it loads — a same-origin file, so no CORS limit.
+  var RANKING = ARENA;
+  var rankingPromise = null;
+  function loadRanking(force) {
+    if (rankingPromise && !force) return rankingPromise;
+    var url = "arena-ranking.json" + (force ? "?t=" + new Date().getTime() : "");
+    rankingPromise = fetch(url)
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (j) { if (j && j.models && j.models.length) RANKING = j.models; return RANKING; })
+      .catch(function () { return RANKING; });
+    return rankingPromise;
+  }
+
   function arenaScore(id) {
     var low = String(id).toLowerCase();
-    for (var i = 0; i < ARENA.length; i++) {
-      if (low.indexOf(ARENA[i].pat) !== -1) return ARENA[i].score;
+    for (var i = 0; i < RANKING.length; i++) {
+      if (low.indexOf(RANKING[i].pat) !== -1) return RANKING[i].score;
     }
     return 0;
   }
@@ -201,7 +216,9 @@
 
   // Public: wire a select + the existing text input. The text input stays the
   // value carrier (save handlers read it), so no app-side save changes needed.
-  function populate(selectEl, inputEl) {
+  // refreshBtnEl (optional) becomes a "refresh model list" button; onRefreshDone
+  // (optional) is called with true/false so the app can toast the result.
+  function populate(selectEl, inputEl, refreshBtnEl, onRefreshDone) {
     if (!selectEl || !inputEl) return;
     if (!selectEl.__wired) {
       selectEl.__wired = 1;
@@ -210,22 +227,41 @@
         else { inputEl.value = selectEl.value; inputEl.style.display = "none"; }
       });
     }
-
-    var cache = readCache();
-    if (cache) { setMode(selectEl, inputEl, true); render(selectEl, inputEl, cache.models); }
-
-    if (!cache || !isFresh(cache)) {
-      fetchModels().then(function (models) {
-        // Re-render only if the user hasn't since switched to Custom editing.
-        if (selectEl.value !== CUSTOM) { setMode(selectEl, inputEl, true); render(selectEl, inputEl, models); }
-      }).catch(function () {
-        if (!cache) setMode(selectEl, inputEl, false); // no data: fall back to text input
+    if (refreshBtnEl && !refreshBtnEl.__wired) {
+      refreshBtnEl.__wired = 1;
+      refreshBtnEl.addEventListener("click", function () {
+        refreshBtnEl.disabled = true;
+        refresh(selectEl, inputEl, function (ok) { refreshBtnEl.disabled = false; if (onRefreshDone) onRefreshDone(ok); });
       });
     }
+
+    loadRanking().then(function () {
+      var cache = readCache();
+      if (cache) { setMode(selectEl, inputEl, true); render(selectEl, inputEl, cache.models); }
+
+      if (!cache || !isFresh(cache)) {
+        fetchModels().then(function (models) {
+          // Re-render only if the user hasn't since switched to Custom editing.
+          if (selectEl.value !== CUSTOM) { setMode(selectEl, inputEl, true); render(selectEl, inputEl, models); }
+        }).catch(function () {
+          if (!cache) setMode(selectEl, inputEl, false); // no data: fall back to text input
+        });
+      }
+    });
+  }
+
+  // Force a fresh pull: drop the cached model list, re-read the ranking file,
+  // re-fetch OpenRouter, re-render. onDone(ok) reports success for a toast.
+  function refresh(selectEl, inputEl, onDone) {
+    try { localStorage.removeItem(CACHE_KEY); } catch (e) {}
+    loadRanking(true).then(function () { return fetchModels(); })
+      .then(function (models) { setMode(selectEl, inputEl, true); render(selectEl, inputEl, models); if (onDone) onDone(true); })
+      .catch(function () { if (onDone) onDone(false); });
   }
 
   window.StackModels = {
     populate: populate,
+    refresh: refresh,
     fetchModels: fetchModels,
     label: label,
     mapModel: mapModel,
