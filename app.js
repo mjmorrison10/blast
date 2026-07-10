@@ -478,7 +478,9 @@ if (_resetBtn) _resetBtn.addEventListener("click", function () {
 
 // === Settings (BYO Gemini API key, same pattern as RECALL) ===
 var LS_SETTINGS = "blast_settings_v1";
-var DEFAULT_OR_MODEL = "google/gemini-2.5-flash";
+// A non-Google default so choosing OpenRouter actually escapes Gemini's load —
+// a Google model here would just route back to the same busy backend.
+var DEFAULT_OR_MODEL = "openai/gpt-4o-mini";
 // Slugs OpenRouter has retired — saved settings pointing here now 404
 // ("No endpoints found"), so silently upgrade them to the current default.
 var DEAD_OR_MODELS = ["google/gemini-2.0-flash-001", "google/gemini-2.0-flash"];

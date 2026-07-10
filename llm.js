@@ -31,6 +31,9 @@ function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
 var MAX_ATTEMPTS = 3;                      // 1 original + 2 retries
 var RETRY_BACKOFF_MS = [4000, 12000];      // waits before attempt 2, 3
 var RETRY_DELAY_CAP_MS = 20000;            // never wait absurdly long
+// Transient conditions worth retrying: rate-limit (429) and server overload
+// (500/503 — Gemini's "high demand" spikes), which usually clear in seconds.
+function isRetryable(status) { return status === 429 || status === 500 || status === 503; }
 
 function parseRetryDelayMs(bodyText) {
   try {
@@ -53,7 +56,7 @@ function parseRetryDelayMs(bodyText) {
 async function fetchWithRetry(makeRequest, onRetry) {
   for (var attempt = 1; ; attempt++) {
     var res = await makeRequest();
-    if (res.status !== 429 || attempt >= MAX_ATTEMPTS) return res;
+    if (!isRetryable(res.status) || attempt >= MAX_ATTEMPTS) return res;
     var serverDelay = null;
     try { serverDelay = parseRetryDelayMs(await res.clone().text()); } catch (e) {}
     var wait = serverDelay != null ? serverDelay : (RETRY_BACKOFF_MS[attempt - 1] || 12000);
@@ -159,6 +162,7 @@ async function extractGeminiText(res) {
     if (res.status === 401 || res.status === 403) throw new Error("Gemini API key rejected — open Settings");
     if (res.status === 413 || /too large/i.test(body)) throw new Error("File too large for Gemini");
     if (res.status === 429) throw new Error("Rate limited — try again in a minute");
+    if (res.status === 503 || res.status === 500) throw new Error("Gemini is overloaded right now (still busy after a few retries) — try again in a moment, or switch to OpenRouter in Settings.");
     throw new Error("Gemini error " + res.status + ": " + body.slice(0, 150));
   }
   var json = await res.json();
