@@ -302,6 +302,9 @@ function renderPlatforms() {
         pcaption.value = suggestions[idx];
         card.querySelectorAll(".suggestchip").forEach(function (c) { c.classList.remove("picked"); });
         chip.classList.add("picked");
+        // Setting .value in JS doesn't fire "input", so refresh the char-count
+        // and over-limit warning here or they'd reflect the previous caption.
+        refreshValidation(card, p);
         saveSession();
       });
     });
@@ -348,8 +351,11 @@ function renderPlatforms() {
     });
     posturl.addEventListener("input", function () {
       platformPostUrl[p.name] = posturl.value;
-      // Pasting a live URL is a strong signal it actually went up.
-      if (posturl.value.trim()) bumpStatus(p.name, "posted");
+      // Only a plausible URL signals it actually went up — bumping on the first
+      // keystroke used to strand the platform on the terminal "posted" state
+      // (bumpStatus can't walk back) if the user then cleared the field.
+      if (/^https?:\/\//i.test(posturl.value.trim())) bumpStatus(p.name, "posted");
+      refreshStatus();
       saveSession();
     });
     posturl.addEventListener("change", refreshStatus);
@@ -466,8 +472,18 @@ if (_resetBtn) _resetBtn.addEventListener("click", function () {
 
 // === Settings (BYO Gemini API key, same pattern as RECALL) ===
 var LS_SETTINGS = "blast_settings_v1";
+var DEFAULT_OR_MODEL = "google/gemini-2.5-flash";
+// Slugs OpenRouter has retired — saved settings pointing here now 404
+// ("No endpoints found"), so silently upgrade them to the current default.
+var DEAD_OR_MODELS = ["google/gemini-2.0-flash-001", "google/gemini-2.0-flash"];
 function loadSettings() {
-  try { var s = JSON.parse(localStorage.getItem(LS_SETTINGS)); return s || {}; }
+  try {
+    var s = JSON.parse(localStorage.getItem(LS_SETTINGS)) || {};
+    if (s.openrouterModel && DEAD_OR_MODELS.indexOf(s.openrouterModel) >= 0) {
+      s.openrouterModel = DEFAULT_OR_MODEL;
+    }
+    return s;
+  }
   catch (e) { return {}; }
 }
 function saveSettingsObj(s) {
@@ -490,7 +506,7 @@ function getProviderConfig() {
     provider: s.provider === "openrouter" ? "openrouter" : "gemini",
     geminiKey: s.geminiKey || "",
     openrouterKey: s.openrouterKey || "",
-    openrouterModel: s.openrouterModel || "google/gemini-2.0-flash-001",
+    openrouterModel: s.openrouterModel || DEFAULT_OR_MODEL,
   };
 }
 
@@ -520,7 +536,7 @@ function openSettings() {
   orkeystatus.className = "keystatus " + (s.openrouterKey ? "set" : "empty");
   orkey.type = "password";
   orkeyshow.textContent = "show";
-  ormodel.value = s.openrouterModel || "google/gemini-2.0-flash-001";
+  ormodel.value = s.openrouterModel || DEFAULT_OR_MODEL;
 
   setTimeout(function () { (provider === "gemini" ? gemkey : orkey).focus(); }, 40);
 }
@@ -571,7 +587,7 @@ $("#keysave").addEventListener("click", function () {
     provider: provider,
     geminiKey: gk,
     openrouterKey: ok,
-    openrouterModel: ormodel.value.trim() || "google/gemini-2.0-flash-001",
+    openrouterModel: ormodel.value.trim() || DEFAULT_OR_MODEL,
   });
   if (saved) {
     toast("Settings saved");
@@ -782,7 +798,7 @@ function renderUploadZone() {
   }
   uploadzone.classList.add("has-file");
   uploadzone.innerHTML =
-    '<div class="row"><div class="name">' + pendingFile.name + '</div>' +
+    '<div class="row"><div class="name">' + escHtml(pendingFile.name) + '</div>' +
     '<button class="x" id="filex" type="button" aria-label="Remove file">×</button></div>' +
     '<div class="size">' + fmtBytes(pendingFile.size) + '</div>';
   $("#filex").addEventListener("click", function (e) {
