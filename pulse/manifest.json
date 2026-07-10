@@ -1,0 +1,12 @@
+{
+  "name": "PULSE",
+  "short_name": "PULSE",
+  "description": "Track each clip's view velocity at 1h/2h/6h, pull YouTube stats automatically, and log winners back to your HOOKLAB ledger.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0E1116",
+  "theme_color": "#0E1116",
+  "categories": ["productivity", "utilities"]
+}
