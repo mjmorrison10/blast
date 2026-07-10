@@ -90,6 +90,23 @@ var platformPickedIdx = {};
 // Status flow: none → copied → opened → posted (or skipped at any point).
 var platformStatus = {};   // name -> "none"|"copied"|"opened"|"posted"|"skipped"
 var platformPostUrl = {};  // name -> string
+// When a platform first becomes "posted": the moment it happened + a snapshot of
+// the caption that was live then. PULSE (the analytics app) reads these to anchor
+// its 1h/2h/6h check-ins. Caption maps are mutable, so we snapshot here.
+var platformPostedAt = {};      // name -> ms epoch
+var platformPostedCaption = {};  // name -> string
+function stampPosted(name, caption) {
+  if (!platformPostedAt[name]) platformPostedAt[name] = Date.now();
+  platformPostedCaption[name] = caption || "";
+}
+function clearPosted(name) { delete platformPostedAt[name]; delete platformPostedCaption[name]; }
+function relTimeShort(ms) {
+  var m = Math.round((Date.now() - ms) / 60000);
+  if (m < 1) return "just now";
+  if (m < 60) return m + "m ago";
+  var h = Math.round(m / 60);
+  return h < 48 ? h + "h ago" : Math.round(h / 24) + "d ago";
+}
 var STATUS_ORDER = { none: 0, copied: 1, opened: 2, posted: 3, skipped: 3 };
 var STATUS_LABEL = { none: "Not started", copied: "Caption copied", opened: "Upload opened", posted: "Posted", skipped: "Skipped" };
 
@@ -118,6 +135,8 @@ function saveSession() {
       picked: platformPickedIdx,
       status: platformStatus,
       postUrl: platformPostUrl,
+      postedAt: platformPostedAt,
+      postedCaption: platformPostedCaption,
       updatedAt: Date.now(),
     }));
   } catch (e) { /* quota — non-fatal, session just won't persist */ }
@@ -131,6 +150,8 @@ function loadSession() {
     platformPickedIdx = s.picked || {};
     platformStatus = s.status || {};
     platformPostUrl = s.postUrl || {};
+    platformPostedAt = s.postedAt || {};
+    platformPostedCaption = s.postedCaption || {};
     var cap = document.querySelector("#caption");
     if (cap && typeof s.base === "string") cap.value = s.base;
     var tr = document.querySelector("#transcript");
@@ -140,6 +161,7 @@ function loadSession() {
 function resetSession() {
   platformCaptions = {}; platformSuggestions = {}; platformPickedIdx = {};
   platformStatus = {}; platformPostUrl = {};
+  platformPostedAt = {}; platformPostedCaption = {};
   var cap = document.querySelector("#caption");
   if (cap) cap.value = "";
   var tr = document.querySelector("#transcript");
@@ -256,6 +278,7 @@ function renderPlatforms() {
       '<div class="prow statusrow">' +
       '<button class="btn ghost markposted" type="button">✓ Mark posted</button>' +
       '<button class="btn ghost markskip" type="button">Skip</button>' +
+      '<span class="postedago"></span>' +
       '</div>' +
       '<input class="posturl" type="url" placeholder="Paste the live post URL (optional)" value="' + escHtml(platformPostUrl[p.name] || "") + '">';
 
@@ -345,7 +368,9 @@ function renderPlatforms() {
     });
 
     card.querySelector(".markposted").addEventListener("click", function () {
-      platformStatus[p.name] = statusOf(p.name) === "posted" ? "none" : "posted";
+      var nowPosted = statusOf(p.name) !== "posted";
+      platformStatus[p.name] = nowPosted ? "posted" : "none";
+      if (nowPosted) stampPosted(p.name, captionFor(p, pcaption)); else clearPosted(p.name);
       refreshStatus();
       saveSession();
     });
@@ -359,7 +384,7 @@ function renderPlatforms() {
       // Only a plausible URL signals it actually went up — bumping on the first
       // keystroke used to strand the platform on the terminal "posted" state
       // (bumpStatus can't walk back) if the user then cleared the field.
-      if (/^https?:\/\//i.test(posturl.value.trim())) bumpStatus(p.name, "posted");
+      if (/^https?:\/\//i.test(posturl.value.trim())) { bumpStatus(p.name, "posted"); stampPosted(p.name, captionFor(p, pcaption)); }
       refreshStatus();
       saveSession();
     });
@@ -390,6 +415,8 @@ function refreshStatus() {
       if (posted_btn) posted_btn.textContent = st === "posted" ? "✓ Posted" : "✓ Mark posted";
       var skip_btn = card.querySelector(".markskip");
       if (skip_btn) skip_btn.textContent = st === "skipped" ? "Skipped" : "Skip";
+      var ago = card.querySelector(".postedago");
+      if (ago) ago.textContent = (st === "posted" && platformPostedAt[p.name]) ? "Posted " + relTimeShort(platformPostedAt[p.name]) : "";
     }
     if (st === "posted") posted++;
     if (st === "posted" || st === "skipped") done++;
@@ -399,6 +426,8 @@ function refreshStatus() {
     sub.textContent = posted + " of " + PLATFORMS.length + " posted" +
       (done > posted ? " · " + (done - posted) + " skipped" : "");
   }
+  var pulseLink = $("#pulseLink");
+  if (pulseLink) pulseLink.classList.toggle("hidden", posted === 0);
   var bar = $("#sessionProgress");
   if (bar) bar.style.setProperty("--pct", Math.round((done / PLATFORMS.length) * 100) + "%");
 }
