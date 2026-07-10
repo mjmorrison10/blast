@@ -129,6 +129,7 @@ function saveSession() {
   try {
     localStorage.setItem(LS_SESSION, JSON.stringify({
       base: (document.querySelector("#caption") || {}).value || "",
+      videoHook: (document.querySelector("#videohook") || {}).value || "",
       transcript: (document.querySelector("#transcript") || {}).value || "",
       captions: platformCaptions,
       suggestions: platformSuggestions,
@@ -154,6 +155,8 @@ function loadSession() {
     platformPostedCaption = s.postedCaption || {};
     var cap = document.querySelector("#caption");
     if (cap && typeof s.base === "string") cap.value = s.base;
+    var vh = document.querySelector("#videohook");
+    if (vh && typeof s.videoHook === "string") vh.value = s.videoHook;
     var tr = document.querySelector("#transcript");
     if (tr && typeof s.transcript === "string") tr.value = s.transcript;
   } catch (e) { /* corrupt — start fresh */ }
@@ -164,6 +167,8 @@ function resetSession() {
   platformPostedAt = {}; platformPostedCaption = {};
   var cap = document.querySelector("#caption");
   if (cap) cap.value = "";
+  var vh = document.querySelector("#videohook");
+  if (vh) vh.value = "";
   var tr = document.querySelector("#transcript");
   if (tr) tr.value = "";
   try { localStorage.removeItem(LS_SESSION); } catch (e) {}
@@ -494,15 +499,15 @@ if (_resetBtn) _resetBtn.addEventListener("click", function () {
   toast("Session reset");
 });
 
-// Persist the base caption as it's typed (debounced) so a refresh keeps it.
+// Persist the base caption + video hook as they're typed (debounced) so a
+// refresh keeps them.
 (function () {
-  var cap = $("#caption");
-  if (!cap) return;
   var t;
-  cap.addEventListener("input", function () {
-    clearTimeout(t);
-    t = setTimeout(saveSession, 300);
-  });
+  var save = function () { clearTimeout(t); t = setTimeout(saveSession, 300); };
+  var cap = $("#caption");
+  if (cap) cap.addEventListener("input", save);
+  var vh = $("#videohook");
+  if (vh) vh.addEventListener("input", save);
 })();
 
 // === Settings (BYO Gemini API key, same pattern as RECALL) ===

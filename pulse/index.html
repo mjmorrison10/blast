@@ -52,22 +52,26 @@
 
     <div class="subpanel" id="manualPanel">
       <h3>Add a post manually</h3>
-      <div class="formgrid">
-        <label class="fieldlabel">Platform
-          <select id="mPlatform"></select>
-        </label>
-        <label class="fieldlabel">Post URL
-          <input id="mUrl" type="url" placeholder="https://youtube.com/shorts/… or the live post link">
+      <p class="hint" style="margin:2px 0 10px">One clip, all the platforms you ran it on. Add the hook and
+        caption once; the link per platform is optional — add it later on each card to auto-track stats.</p>
+      <label class="fieldlabel">Platforms you posted to</label>
+      <div class="platformpicks" id="mPlatforms"></div>
+      <div class="formgrid" style="margin-top:12px">
+        <label class="fieldlabel">Video hook (the spoken opening line)
+          <input id="mHook" type="text" placeholder="the first line you say on camera">
         </label>
         <label class="fieldlabel">Posted at
           <input id="mPostedAt" type="datetime-local">
         </label>
-        <label class="fieldlabel">Hook / caption (first line is the hook)
-          <input id="mHook" type="text" placeholder="the opening line you led with">
-        </label>
       </div>
+      <label class="fieldlabel" style="margin-top:12px">Caption <span style="font-weight:400">(optional — the posted text)</span>
+        <textarea id="mCaption" rows="2" placeholder="the caption you posted with (if any)"></textarea>
+      </label>
+      <label class="fieldlabel" style="margin-top:12px">A link (optional)
+        <input id="mUrl" type="url" placeholder="https://youtube.com/shorts/… — attaches to the matching platform">
+      </label>
       <div class="actionrow" style="margin-top:12px">
-        <button class="btn primary" id="mAdd" type="button">Add post</button>
+        <button class="btn primary" id="mAdd" type="button">Track across platforms</button>
         <span class="progress" id="mAddLabel"></span>
       </div>
     </div>

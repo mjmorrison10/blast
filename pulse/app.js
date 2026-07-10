@@ -202,10 +202,15 @@
   }
 
   // ---------- import from BLAST ----------
-  function makePost(platform, url, caption, postedAt) {
-    return { id: uid(), platform: platform, url: url, caption: caption || "",
-      hook: String(caption || "").split("\n")[0].slice(0, 200),
+  function makePost(platform, url, caption, postedAt, hook, blastKey) {
+    // hook is its own field now; when absent (legacy callers, old backups) fall
+    // back to the caption's first line so nothing regresses.
+    var h = (hook != null && String(hook).trim()) ? String(hook).trim() : String(caption || "").split("\n")[0].slice(0, 200);
+    var p = { id: uid(), platform: platform, url: url || "", caption: caption || "",
+      hook: h.slice(0, 200),
       postedAt: postedAt || Date.now(), snapshots: [], outcome: null, ledgerLoggedAt: null };
+    if (blastKey) p.blastKey = blastKey;
+    return p;
   }
   function importFromBlast() {
     var raw = null; try { raw = localStorage.getItem(LS_BLAST); } catch (e) {}
@@ -214,21 +219,30 @@
     if (!s) { toast("BLAST session couldn't be read"); return; }
     var status = s.status || {}, postUrl = s.postUrl || {}, postedAt = s.postedAt || {},
       postedCaption = s.postedCaption || {}, captions = s.captions || {};
-    var added = 0, skipped = 0, nourl = 0;
+    var hook = (s.videoHook || "").trim();
+    var added = 0, skipped = 0, nolink = 0;
     Object.keys(status).forEach(function (name) {
       if (status[name] !== "posted") return;
       var url = (postUrl[name] || "").trim();
-      if (!url) { nourl++; return; }
-      if (posts.some(function (p) { return p.platform === name && p.url === url; })) { skipped++; return; }
+      var at = postedAt[name] || Date.now();
+      var blastKey = name + "|" + at;
+      // Dedupe on the BLAST session key when we have one; fall back to the old
+      // (platform,url) match so posts imported before this change still dedupe.
+      if (posts.some(function (p) { return p.blastKey === blastKey || (url && p.platform === name && p.url === url); })) { skipped++; return; }
       var cap = postedCaption[name] || captions[name] || s.base || "";
-      posts.unshift(makePost(name, url, cap, postedAt[name] || Date.now()));
+      posts.unshift(makePost(name, url, cap, at, hook, blastKey));
+      if (!url) nolink++;
       added++;
     });
     if (added) savePosts();
     render();
-    if (added) toast("Imported " + added + " post" + (added > 1 ? "s" : "") + " from BLAST" + (skipped ? " (" + skipped + " already tracked)" : ""));
+    if (added) {
+      var msg = "Imported " + added + " post" + (added > 1 ? "s" : "") + " from BLAST";
+      if (nolink) msg += " — " + nolink + " without links yet (add each link on its card for stats)";
+      else if (skipped) msg += " (" + skipped + " already tracked)";
+      toast(msg);
+    }
     else if (skipped) toast("Those BLAST posts are already tracked");
-    else if (nourl) toast("BLAST has posted clips but no post URLs yet — paste the live link in BLAST, then import");
     else toast("Nothing marked Posted in BLAST yet");
     if (added) autoCheckDue(false);
   }
@@ -288,11 +302,20 @@
     host.innerHTML = sorted.map(function (post) {
       var yt = isYouTube(post) && ytId(post.url);
       var due = nextDue(post, now);
+      var linkPart = post.url
+        ? '<a href="' + esc(post.url) + '" target="_blank" rel="noopener">open post ↗</a>'
+        : '<button class="addlink" data-act="setlink" data-id="' + post.id + '" title="Add the live post link to track stats">＋ add link</button>';
+      var capLine = "";
+      var capText = String(post.caption || "").replace(/\s+/g, " ").trim();
+      if (capText && capText !== String(post.hook || "").trim()) {
+        capLine = '<p class="capline" title="' + esc(capText) + '">Caption: ' + esc(capText) + '</p>';
+      }
       var head = '<div class="posthead">' +
         '<span class="platformtag">' + esc(post.platform) + '</span>' +
         '<div style="flex:1;min-width:0">' +
         '<p class="hook">' + (esc(post.hook) || '<span style="color:var(--faint)">(no hook noted)</span>') + '</p>' +
-        '<div class="sub"><a href="' + esc(post.url) + '" target="_blank" rel="noopener">open post ↗</a>' +
+        capLine +
+        '<div class="sub">' + linkPart +
         '<span>posted ' + relTime(post.postedAt) + '</span>' +
         (yt ? '<span class="pilltag">youtube auto</span>' : '<span class="pilltag">manual</span>') + '</div></div>' +
         '<div class="postactions">' +
@@ -333,6 +356,14 @@
           render();
           toast(removed ? "Deleted here and from the HOOKLAB ledger" : "Deleted");
         }
+        else if (act === "setlink") {
+          var link = prompt("Paste the live post link for " + post.platform, post.url || "");
+          if (link == null) return;
+          link = link.trim();
+          if (link && !/^https?:\/\//i.test(link)) { toast("That doesn't look like a link (needs http…)"); return; }
+          post.url = link; savePosts(); render();
+          if (link) { toast("Link added"); if (isYouTube(post) && ytId(post.url) && settings.ytKey) checkYouTube(post, {}).then(function (ok) { if (ok) render(); }); }
+        }
         else if (act === "check") { checkYouTube(post, { loud: true }).then(function (ok) { if (ok) { render(); toast("Updated from YouTube"); } }); }
         else if (act === "rec") { recordManual(post); }
         else if (act === "focusrec") { var inp = $("#snap-" + id); if (inp) inp.focus(); }
@@ -354,20 +385,74 @@
   }
 
   // ---------- manual add ----------
+  // "Platforms you're running": the BLAST session's active platforms if present
+  // (posted/opened/copied — not skipped), else the platforms you've set caption
+  // presets for, else all of them.
+  function runningPlatforms() {
+    try {
+      var s = JSON.parse(localStorage.getItem(LS_BLAST));
+      if (s && s.status) {
+        var active = PLATFORMS.filter(function (n) { return ["posted", "opened", "copied"].indexOf(s.status[n]) !== -1; });
+        if (active.length) return active;
+      }
+    } catch (e) {}
+    try {
+      var pr = JSON.parse(localStorage.getItem("blast_presets_v1"));
+      if (pr) { var keys = PLATFORMS.filter(function (n) { return pr[n]; }); if (keys.length) return keys; }
+    } catch (e) {}
+    return PLATFORMS.slice();
+  }
+
+  function renderPlatformPicks() {
+    var host = $("#mPlatforms"); if (!host) return;
+    var on = {}; runningPlatforms().forEach(function (n) { on[n] = 1; });
+    host.innerHTML = PLATFORMS.map(function (n) {
+      return '<label class="' + (on[n] ? "on" : "") + '"><input type="checkbox" value="' + esc(n) + '"' + (on[n] ? " checked" : "") + '>' + esc(n) + '</label>';
+    }).join("");
+    host.querySelectorAll("input[type=checkbox]").forEach(function (c) {
+      c.addEventListener("change", function () { c.parentNode.classList.toggle("on", c.checked); });
+    });
+  }
+
+  // Match a pasted URL to the platform it belongs to, so a single link attaches
+  // to the right card (the others start link-less).
+  function platformForUrl(url) {
+    var u = String(url).toLowerCase();
+    if (/youtube\.com|youtu\.be/.test(u)) return "YouTube Shorts";
+    if (/tiktok\.com/.test(u)) return "TikTok";
+    if (/instagram\.com/.test(u)) return "Instagram Reels";
+    if (/snapchat\.com/.test(u)) return "Snapchat Spotlight";
+    if (/facebook\.com|fb\.watch/.test(u)) return "Facebook Reels";
+    if (/(^|\/\/)(x|twitter)\.com/.test(u)) return "X";
+    if (/threads\.net/.test(u)) return "Threads";
+    if (/linkedin\.com/.test(u)) return "LinkedIn";
+    if (/pinterest\./.test(u)) return "Pinterest";
+    return null;
+  }
+
   function addManual() {
-    var platform = $("#mPlatform").value;
+    var checked = Array.prototype.slice.call(document.querySelectorAll("#mPlatforms input[type=checkbox]:checked"))
+      .map(function (c) { return c.value; });
+    if (!checked.length) { toast("Pick at least one platform"); return; }
     var url = $("#mUrl").value.trim();
     var hook = $("#mHook").value.trim();
+    var caption = $("#mCaption").value.trim();
     var at = $("#mPostedAt").value;
-    if (!url) { toast("Paste the post URL first"); $("#mUrl").focus(); return; }
     var postedAt = at ? new Date(at).getTime() : Date.now();
     if (!postedAt || isNaN(postedAt)) postedAt = Date.now();
-    posts.unshift(makePost(platform, url, hook, postedAt));
+    // One link attaches to its matching platform (or the first checked one).
+    var linkPlatform = url ? (platformForUrl(url) || checked[0]) : null;
+    checked.forEach(function (name) {
+      var thisUrl = (url && name === linkPlatform) ? url : "";
+      posts.unshift(makePost(name, thisUrl, caption, postedAt, hook));
+    });
     savePosts();
-    $("#mUrl").value = ""; $("#mHook").value = "";
+    $("#mUrl").value = ""; $("#mHook").value = ""; $("#mCaption").value = "";
     render();
-    toast("Now tracking this post");
-    var p = posts[0]; if (isYouTube(p) && ytId(p.url) && settings.ytKey) checkYouTube(p, {}).then(function (ok) { if (ok) render(); });
+    toast("Tracking " + checked.length + " post" + (checked.length > 1 ? "s" : "") + " across your platforms");
+    posts.forEach(function (p) {
+      if (isYouTube(p) && ytId(p.url) && settings.ytKey) checkYouTube(p, {}).then(function (ok) { if (ok) render(); });
+    });
   }
 
   // ---------- export / import backup ----------
@@ -450,8 +535,9 @@
 
     loadAll();
 
-    // populate platform select + default posted-at = now (local)
-    $("#mPlatform").innerHTML = PLATFORMS.map(function (p) { return '<option value="' + esc(p) + '">' + esc(p) + '</option>'; }).join("");
+    // populate platform checkboxes (pre-checked = platforms you're running) +
+    // default posted-at = now (local)
+    renderPlatformPicks();
     var d = new Date(); d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
     $("#mPostedAt").value = d.toISOString().slice(0, 16);
 
