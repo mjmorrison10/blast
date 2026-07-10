@@ -197,7 +197,10 @@
           <button id="orkeyshow" type="button">show</button>
         </div>
         <div class="keystatus empty" id="orkeystatus">No key saved.</div>
-        <label style="margin-top:12px;display:block">Model</label>
+        <label style="margin-top:12px;display:flex;justify-content:space-between;align-items:center">Model
+          <button type="button" id="ormodelrefresh" title="Re-pull the model list and pricing from OpenRouter"
+            style="font:inherit;font-size:11px;letter-spacing:.04em;background:none;border:none;color:var(--brand);cursor:pointer;padding:0;text-transform:none">↻ Refresh</button>
+        </label>
         <select id="ormodelselect"></select>
         <input id="ormodel" type="text" placeholder="openai/gpt-4o-mini" autocomplete="off" spellcheck="false" style="margin-top:8px">
         <p class="hint keyhint" style="margin-top:8px">Live list from OpenRouter, ranked by
