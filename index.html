@@ -59,14 +59,22 @@
       if you haven't. Without a key, every platform just uses your base caption above.</p>
 
     <div class="subpanel" id="videoSuggestPanel">
-      <h3>Or get caption ideas from your video</h3>
-      <p class="hint" style="margin:2px 0 12px">Upload a clip in the optional section below first, then
-        come back here — I'll suggest captions based on what's actually in it instead of you writing one
-        from scratch.</p>
-      <div class="actionrow" style="flex-wrap:wrap;margin-bottom:14px">
+      <h3>Get caption ideas from your clip</h3>
+      <p class="hint" style="margin:2px 0 10px">Already have a transcript (from RECALL, TurboScribe, or
+        anywhere)? Paste it below and I'll write captions from it — no upload needed. Or
+        <button class="linkbtn" id="jumpToUpload" type="button">upload a clip in the "Also reformatting
+        a clip to 9:16?" section</button> and I'll watch or transcribe it for you.</p>
+
+      <label class="fieldlabel" for="transcript">Paste a transcript</label>
+      <textarea id="transcript" placeholder="Paste your clip's transcript here — plain text is fine, timestamps optional."></textarea>
+
+      <div class="hookstatus" id="hookStatus" aria-live="polite"></div>
+
+      <div class="actionrow" style="flex-wrap:wrap;margin:12px 0 14px">
+        <span class="hint" style="margin-right:2px">If uploading a clip instead:</span>
         <div class="providerrow" id="analysisModeGroup">
           <label class="radiopill"><input type="radio" name="analysisMode" id="modeVision" value="vision" checked>Watch the video <span class="pilltag">Gemini</span></label>
-          <label class="radiopill"><input type="radio" name="analysisMode" id="modeTranscript" value="transcript">From transcript <span class="pilltag">any provider*</span></label>
+          <label class="radiopill"><input type="radio" name="analysisMode" id="modeTranscript" value="transcript">Transcribe it <span class="pilltag">any provider*</span></label>
         </div>
       </div>
       <div class="actionrow" style="flex-wrap:wrap;margin-bottom:14px">
@@ -78,12 +86,12 @@
         </div>
       </div>
       <div class="actionrow">
-        <button class="btn primary" id="suggestBtn" type="button">Suggest captions from video →</button>
+        <button class="btn primary" id="suggestBtn" type="button">Suggest captions →</button>
         <span class="progress" id="suggestLabel"></span>
       </div>
-      <p class="hint" style="margin-top:10px">*For an actual video file (not audio-only), transcript mode
+      <p class="hint" style="margin-top:10px">*For an actual video file (not audio-only), transcribe mode
         still needs Gemini in this version — OpenRouter has no path to read a video file at all yet, even
-        just for its audio track.</p>
+        just for its audio track. Pasting a transcript works on any provider.</p>
     </div>
 
     <div class="sessionbar" id="sessionbar">

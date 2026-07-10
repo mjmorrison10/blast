@@ -112,6 +112,7 @@ function saveSession() {
   try {
     localStorage.setItem(LS_SESSION, JSON.stringify({
       base: (document.querySelector("#caption") || {}).value || "",
+      transcript: (document.querySelector("#transcript") || {}).value || "",
       captions: platformCaptions,
       suggestions: platformSuggestions,
       picked: platformPickedIdx,
@@ -132,6 +133,8 @@ function loadSession() {
     platformPostUrl = s.postUrl || {};
     var cap = document.querySelector("#caption");
     if (cap && typeof s.base === "string") cap.value = s.base;
+    var tr = document.querySelector("#transcript");
+    if (tr && typeof s.transcript === "string") tr.value = s.transcript;
   } catch (e) { /* corrupt — start fresh */ }
 }
 function resetSession() {
@@ -139,6 +142,8 @@ function resetSession() {
   platformStatus = {}; platformPostUrl = {};
   var cap = document.querySelector("#caption");
   if (cap) cap.value = "";
+  var tr = document.querySelector("#transcript");
+  if (tr) tr.value = "";
   try { localStorage.removeItem(LS_SESSION); } catch (e) {}
   // NOTE: presets deliberately survive Reset — they're a durable per-creator
   // habit, not part of a single posting session.
@@ -450,6 +455,7 @@ function consumeHandoff() {
 consumeHandoff();
 
 renderPlatforms();
+renderHookStatus();
 
 var _resetBtn = $("#resetSession");
 if (_resetBtn) _resetBtn.addEventListener("click", function () {
@@ -707,7 +713,66 @@ function parseCaptionJSON(text) {
   catch (e) { throw new Error("Model returned something that wasn't valid JSON"); }
 }
 
-async function suggestCaptionsFromVideo(file, mode, count, onPhase) {
+// === HOOKLAB evidence (same-origin localStorage read; personalizes prompts) ===
+// BLAST is the last stop in RECALL → HOOKLAB → BLAST. When the creator has
+// logged winning hooks in HOOKLAB (hooklab_state_v1, same origin), lean the
+// caption suggestions on those proven openers — personal ledger > generic.
+var HOOKLAB_URL = "https://mjmorrison10.github.io/Hooklabs/";
+function loadHooklabEvidence() {
+  try {
+    var raw = localStorage.getItem("hooklab_state_v1");
+    if (!raw) return { winners: [], found: false, reason: "absent" };
+    var st = JSON.parse(raw);
+    var ledger = st.ledger || [];
+    var winners = ledger
+      .filter(function (e) { return e && e.outcome === "winner" && e.hook; })
+      .slice(0, 15)
+      .map(function (e) { return String(e.hook); });
+    var reason = winners.length ? "ok" : (ledger.length ? "no-winners" : "empty");
+    return { winners: winners, found: true, reason: reason };
+  } catch (e) {
+    return { winners: [], found: false, reason: "absent" };
+  }
+}
+// Prompt fragment (empty unless there are winners) appended to any suggestion prompt.
+function hooklabEvidenceBlock(ev) {
+  if (!ev || !ev.winners.length) return "";
+  return "\n\nThe creator's own proven winning hooks, from their HOOKLAB ledger " +
+    "(these opened clips that actually performed — prefer captions that echo their structure, angle, " +
+    "and voice):\n- " + ev.winners.join("\n- ") +
+    "\nStill ground every caption in the transcript/clip; never invent claims or numbers it doesn't support.";
+}
+// Status line under the transcript box, mirroring RECALL's ledger messaging.
+function renderHookStatus() {
+  var el = $("#hookStatus");
+  if (!el) return;
+  var ev = loadHooklabEvidence();
+  if (ev.winners.length) {
+    el.className = "hookstatus on";
+    el.textContent = "HOOKLAB ledger: " + ev.winners.length + " winning hook" +
+      (ev.winners.length > 1 ? "s" : "") + " — suggestions will lean on your proven openers.";
+    return;
+  }
+  var msg = !ev.found ? "No HOOKLAB ledger in this browser yet — "
+    : ev.reason === "empty" ? "Your HOOKLAB ledger is empty — "
+    : "No winning hooks logged in HOOKLAB yet — ";
+  el.className = "hookstatus";
+  el.innerHTML = msg + '<span class="hooklink" id="hookOpen">open the full HOOKLAB app</span>' +
+    " and mark winners to personalize these suggestions.";
+  var link = $("#hookOpen");
+  if (link) link.addEventListener("click", function () { window.open(HOOKLAB_URL, "_blank", "noopener"); });
+}
+
+async function suggestCaptionsFromText(transcript, count, evidenceBlock) {
+  var config = getProviderConfig();
+  var names = PLATFORMS.map(function (p) { return p.name; });
+  var textPrompt = "Here is a transcript of a video clip:\n\n" + transcript + "\n\n" +
+    captionSuggestPrompt(names, count) + (evidenceBlock || "");
+  var text = await generateText(config, { prompt: textPrompt, jsonMode: true, temperature: 0.5 });
+  return parseCaptionJSON(text);
+}
+
+async function suggestCaptionsFromVideo(file, mode, count, evidenceBlock, onPhase) {
   var config = getProviderConfig();
   var names = PLATFORMS.map(function (p) { return p.name; });
 
@@ -715,7 +780,7 @@ async function suggestCaptionsFromVideo(file, mode, count, onPhase) {
     if (!providerSupportsVideo(config)) {
       throw new Error("Video analysis needs Gemini — switch provider in Settings, or use transcript mode.");
     }
-    var visionPrompt = "Watch this video clip, then: " + captionSuggestPrompt(names, count);
+    var visionPrompt = "Watch this video clip, then: " + captionSuggestPrompt(names, count) + (evidenceBlock || "");
     var text = await generateFromMedia(config, { file: file, prompt: visionPrompt, jsonMode: true, mediaKind: "video", onPhase: onPhase });
     return parseCaptionJSON(text);
   }
@@ -724,24 +789,37 @@ async function suggestCaptionsFromVideo(file, mode, count, onPhase) {
   var mediaKind = (file.type || "").indexOf("video/") === 0 ? "video" : "audio";
   var transcript = await generateFromMedia(config, { file: file, prompt: TRANSCRIBE_FOR_CAPTIONS_PROMPT, mediaKind: mediaKind, onPhase: onPhase });
   onPhase("Writing captions");
-  var textPrompt = "Here is a transcript of a video clip:\n\n" + transcript + "\n\n" + captionSuggestPrompt(names, count);
-  var text2 = await generateText(config, { prompt: textPrompt, jsonMode: true, temperature: 0.5 });
-  return parseCaptionJSON(text2);
+  return suggestCaptionsFromText(transcript, count, evidenceBlock);
 }
 
 $("#suggestBtn").addEventListener("click", async function () {
-  if (!pendingFile) { toast("Upload a clip in the optional section below first"); return; }
-  var mode = $("#modeVision").checked ? "vision" : "transcript";
+  var transcriptEl = $("#transcript");
+  var transcriptText = (transcriptEl && transcriptEl.value || "").trim();
+  // Priority: a pasted transcript wins (no upload needed); else the uploaded
+  // clip; else tell the user both routes.
+  if (!transcriptText && !pendingFile) {
+    toast("Paste a transcript above, or upload a clip in the 9:16 section below");
+    return;
+  }
   var countInput = document.querySelector('input[name="suggestCount"]:checked');
   var count = parseInt(countInput ? countInput.value : "3", 10);
+  var ev = loadHooklabEvidence();
+  var evidenceBlock = hooklabEvidenceBlock(ev);
   var btn = $("#suggestBtn");
   var label = $("#suggestLabel");
   btn.disabled = true;
   btn.textContent = "Analyzing…";
   try {
-    var results = await suggestCaptionsFromVideo(pendingFile, mode, count, function (phase) {
-      label.textContent = phase + "…";
-    });
+    var results;
+    if (transcriptText) {
+      label.textContent = "Writing captions…";
+      results = await suggestCaptionsFromText(transcriptText, count, evidenceBlock);
+    } else {
+      var mode = $("#modeVision").checked ? "vision" : "transcript";
+      results = await suggestCaptionsFromVideo(pendingFile, mode, count, evidenceBlock, function (phase) {
+        label.textContent = phase + "…";
+      });
+    }
     PLATFORMS.forEach(function (p) {
       var arr = results[p.name];
       if (Array.isArray(arr) && arr.length) {
@@ -752,7 +830,8 @@ $("#suggestBtn").addEventListener("click", async function () {
     renderPlatforms();
     saveSession();
     label.textContent = "";
-    toast("Caption suggestions ready — pick one per platform");
+    var extra = ev.winners.length ? " (leaning on " + ev.winners.length + " HOOKLAB winner" + (ev.winners.length > 1 ? "s" : "") + ")" : "";
+    toast("Caption suggestions ready — pick one per platform" + extra);
   } catch (err) {
     console.error(err);
     label.textContent = "";
@@ -761,9 +840,24 @@ $("#suggestBtn").addEventListener("click", async function () {
     if (/no (gemini|openrouter) api key/i.test(msg)) openSettings();
   } finally {
     btn.disabled = false;
-    btn.textContent = "Suggest captions from video →";
+    btn.textContent = "Suggest captions →";
   }
 });
+
+// Persist the transcript as the user types; refresh the HOOKLAB status when they
+// return to the field (they may have logged winners in another tab meanwhile).
+(function () {
+  var t = $("#transcript");
+  if (t) {
+    t.addEventListener("input", saveSession);
+    t.addEventListener("focus", renderHookStatus);
+  }
+  var jump = $("#jumpToUpload");
+  if (jump) jump.addEventListener("click", function () {
+    var panel = $("#uploadPanel");
+    if (panel) panel.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+})();
 
 // === Upload handling ===
 var uploadzone = $("#uploadzone"), videofile = $("#videofile");
