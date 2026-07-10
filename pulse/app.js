@@ -37,6 +37,8 @@
     try { posts = JSON.parse(localStorage.getItem(LS_POSTS)) || []; } catch (e) { posts = []; }
     if (!Array.isArray(posts)) posts = [];
     try { var s = JSON.parse(localStorage.getItem(LS_SETTINGS)); if (s) Object.assign(settings, s); } catch (e) {}
+    // ytKey is shared across the stack (shared store wins; legacy local promoted).
+    if (window.StackData) settings.ytKey = window.StackData.resolveKeys(settings, ["ytKey"]).ytKey || "";
   }
   function savePosts() {
     try { localStorage.setItem(LS_POSTS, JSON.stringify(posts)); return true; }
@@ -355,6 +357,13 @@
     r.onload = function () {
       try {
         var data = JSON.parse(r.result);
+        // A whole-stack backup picked here routes to the stack importer.
+        if (window.StackData && window.StackData.isStackBackup(data)) {
+          if (confirm("This is a whole-stack backup. Restore it? It REPLACES data in all four apps on this device.\n\nContains: " + window.StackData.summary(data))) {
+            window.StackData.importAll(data).then(function () { location.reload(); });
+          }
+          return;
+        }
         var incoming = Array.isArray(data) ? data : (data.posts || []);
         var byKey = {}; posts.forEach(function (p) { byKey[p.platform + "|" + p.url] = true; });
         var added = 0;
@@ -390,11 +399,13 @@
     $("#ytkeyshow").addEventListener("click", function () {
       var i = $("#ytkey"); if (i.type === "password") { i.type = "text"; $("#ytkeyshow").textContent = "hide"; } else { i.type = "password"; $("#ytkeyshow").textContent = "show"; }
     });
-    $("#ytkeyclear").addEventListener("click", function () { $("#ytkey").value = ""; settings.ytKey = ""; saveSettings(); $("#ytkeystatus").textContent = "No key saved."; $("#ytkeystatus").className = "keystatus empty"; });
+    $("#ytkeyclear").addEventListener("click", function () { $("#ytkey").value = ""; settings.ytKey = ""; saveSettings(); if (window.StackData) window.StackData.clearSharedKey("ytKey"); $("#ytkeystatus").textContent = "No key saved."; $("#ytkeystatus").className = "keystatus empty"; });
     $("#keysave").addEventListener("click", function () {
       var k = $("#ytkey").value.trim();
       if (k && !/^AIza[0-9A-Za-z_\-]{20,}$/.test(k)) { toast("That doesn't look like a Google API key"); return; }
-      settings.ytKey = k; saveSettings(); closeSettings(); toast("Settings saved");
+      settings.ytKey = k; saveSettings();
+      if (window.StackData) { if (k) window.StackData.writeSharedKeys({ ytKey: k }); else window.StackData.clearSharedKey("ytKey"); }
+      closeSettings(); toast("Settings saved");
       if (k) autoCheckDue(false);
     });
     $("#theme").addEventListener("click", function () {
@@ -424,6 +435,11 @@
     $("#exportBtn").addEventListener("click", exportJSON);
     $("#importFileBtn").addEventListener("click", function () { $("#importFile").click(); });
     $("#importFile").addEventListener("change", function (e) { var f = e.target.files && e.target.files[0]; if (f) importJSON(f); e.target.value = ""; });
+    if (window.StackData) {
+      var sx = $("#stackexport"); if (sx) sx.addEventListener("click", function () { window.StackData.exportToFile(); });
+      var si = $("#stackimport"); if (si) si.addEventListener("click", function () { $("#stackfile").click(); });
+      var sf = $("#stackfile"); if (sf) sf.addEventListener("change", function (e) { var f = e.target.files && e.target.files[0]; if (f) window.StackData.importFromFile(f, function (msg) { toast(msg); }); e.target.value = ""; });
+    }
 
     render();
     // quietly refresh any due YouTube posts on open
