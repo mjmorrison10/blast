@@ -9,7 +9,10 @@
 // Gemini for anything beyond a small inlined file, and video specifically
 // is Gemini-only.
 
-var GEMINI_TEXT_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
+// Rolling alias — always points to the current Flash model, so a pinned
+// version being retired (gemini-2.0-flash, then gemini-2.5-flash both 404'd
+// "no longer available to new users") can't break the app again.
+var GEMINI_TEXT_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent";
 var GEMINI_FILES_UPLOAD = "https://generativelanguage.googleapis.com/upload/v1beta/files";
 var GEMINI_FILES_BASE = "https://generativelanguage.googleapis.com/v1beta/files";
 var OPENROUTER_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions";
