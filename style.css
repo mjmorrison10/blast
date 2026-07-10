@@ -220,10 +220,11 @@ textarea#caption:focus,textarea#transcript:focus{outline:none;border-color:var(-
 .mbody{padding:16px 18px;overflow-y:auto;display:flex;flex-direction:column;gap:11px}
 .mbody label{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;
   color:var(--muted)}
-.mbody input{width:100%;background:var(--ground);border:1px solid var(--border);
+.mbody input,.mbody select{width:100%;background:var(--ground);border:1px solid var(--border);
   border-radius:9px;color:var(--ink);font-family:var(--sans);font-size:14px;padding:10px 12px;outline:none;
   margin-top:6px}
-.mbody input:focus{border-color:var(--brand)}
+.mbody select{cursor:pointer}
+.mbody input:focus,.mbody select:focus{border-color:var(--brand)}
 .mfoot{display:flex;gap:9px;justify-content:flex-end;padding:14px 18px;border-top:1px solid var(--border)}
 .keyrow{display:flex;gap:8px;align-items:center;margin-top:6px}
 .keyrow input{flex:1;font-family:var(--mono);letter-spacing:.02em;margin-top:0}
