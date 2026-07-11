@@ -10,10 +10,11 @@
     { key: "recall",  name: "RECALL",  url: "https://mjmorrison10.github.io/recall/",      color: "#22d3ee", tint: "rgba(34,211,238,.14)" },
     { key: "hooklab", name: "HOOKLAB", url: "https://mjmorrison10.github.io/Hooklabs/",    color: "#a78bfa", tint: "rgba(167,139,250,.14)" },
     { key: "blast",   name: "BLAST",   url: "https://mjmorrison10.github.io/blast/",       color: "#fb923c", tint: "rgba(251,146,60,.14)" },
-    { key: "pulse",   name: "PULSE",   url: "https://mjmorrison10.github.io/blast/pulse/", color: "#f472b6", tint: "rgba(244,114,182,.14)" },
+    { key: "pulse",   name: "PULSE",   url: "https://mjmorrison10.github.io/pulse/", color: "#f472b6", tint: "rgba(244,114,182,.14)" },
   ];
 
-  // Which app is this page? Check /pulse before /blast (PULSE lives at /blast/pulse/).
+  // Which app is this page? Each app lives at its own path (/recall/, /Hooklabs/,
+  // /blast/, /pulse/); match on the path segment.
   function currentKey() {
     var p = location.pathname.toLowerCase();
     if (p.indexOf("pulse") !== -1) return "pulse";
