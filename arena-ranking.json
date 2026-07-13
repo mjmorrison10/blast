@@ -1,5 +1,5 @@
 {
-  "updatedAt": "2026-07-10",
+  "updatedAt": "2026-07-13",
   "source": "https://arena.ai/leaderboard/text",
   "models": [
     {
@@ -63,27 +63,27 @@
       "score": 1986
     },
     {
-      "pat": "mimo-v2.5-pro",
+      "pat": "grok-4.5",
       "score": 1985
     },
     {
-      "pat": "grok-4.5",
+      "pat": "mimo-v2.5-pro",
       "score": 1984
     },
     {
-      "pat": "kimi-k2.6",
+      "pat": "claude-sonnet-5",
       "score": 1983
     },
     {
-      "pat": "qwen3.7-plus",
+      "pat": "kimi-k2.6",
       "score": 1982
     },
     {
-      "pat": "claude-sonnet-5",
+      "pat": "qwen3.6-max",
       "score": 1981
     },
     {
-      "pat": "qwen3.6-max",
+      "pat": "qwen3.7-plus",
       "score": 1980
     },
     {
