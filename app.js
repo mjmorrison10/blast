@@ -620,7 +620,9 @@ orkeyshow.addEventListener("click", function () {
 $("#keysave").addEventListener("click", function () {
   var gk = gemkey.value.trim();
   var ok = orkey.value.trim();
-  if (gk && !/^AIza[0-9A-Za-z_\-]{20,}$/.test(gk)) {
+  // Accept both Gemini key formats: legacy "AIza…" and the newer "AQ.Ab…"
+  // Google began issuing in 2026 (new accounts/projects get AQ. keys).
+  if (gk && !/^(AIza[0-9A-Za-z_\-]{20,}|AQ\.[0-9A-Za-z_\-.]{20,})$/.test(gk)) {
     toast("That doesn't look like a Gemini API key");
     return;
   }
