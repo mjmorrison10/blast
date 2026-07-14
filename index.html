@@ -65,10 +65,15 @@
 
     <div class="subpanel" id="videoSuggestPanel">
       <h3>Get caption ideas from your clip</h3>
-      <p class="hint" style="margin:2px 0 10px">Already have a transcript (from RECALL, TurboScribe, or
+      <p class="hint" style="margin:2px 0 10px">Already have a transcript (from RECALL,
+        <a href="https://turboscribe.ai/dashboard" target="_blank" rel="noopener">TurboScribe</a>, or
         anywhere)? Paste it below and I'll write captions from it — no upload needed. Or
         <button class="linkbtn" id="jumpToUpload" type="button">upload a clip in the "Also reformatting
         a clip to 9:16?" section</button> and I'll watch or transcribe it for you.</p>
+
+      <label class="fieldlabel" for="clipContext">What's the clip about? <span style="font-weight:400;color:var(--muted)">— optional, but it sharpens captions a lot</span></label>
+      <textarea id="clipContext" placeholder="The real point, angle, and tone — a transcript alone often misses it. e.g. 'The takeaway is that consistency beats intensity: do less, but never skip. Tone is blunt and encouraging.'"></textarea>
+      <p class="hint" style="margin:2px 0 12px">The AI uses this to frame the captions. It won't state anything the clip doesn't support.</p>
 
       <label class="fieldlabel" for="transcript">Paste a transcript</label>
       <textarea id="transcript" placeholder="Paste your clip's transcript here — plain text is fine, timestamps optional."></textarea>

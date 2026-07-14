@@ -804,6 +804,16 @@ function hooklabEvidenceBlock(ev) {
     "and voice):\n- " + ev.winners.join("\n- ") +
     "\nStill ground every caption in the transcript/clip; never invent claims or numbers it doesn't support.";
 }
+// Creator-supplied context about the clip's angle/point/tone. A transcript alone
+// often misses what a clip is really saying; this frames the captions correctly
+// without letting the model invent unsupported claims. Empty => no change.
+function clipContextBlock(ctx) {
+  ctx = (ctx || "").trim();
+  if (!ctx) return "";
+  return "\n\nContext from the creator about this clip (its real point, angle, and tone — use it to " +
+    "frame the captions correctly, but do not state anything as fact that the transcript or clip " +
+    "doesn't actually support):\n" + ctx;
+}
 // Status line under the transcript box, mirroring RECALL's ledger messaging.
 function renderHookStatus() {
   var el = $("#hookStatus");
@@ -825,16 +835,16 @@ function renderHookStatus() {
   if (link) link.addEventListener("click", function () { window.open(HOOKLAB_URL, "_blank", "noopener"); });
 }
 
-async function suggestCaptionsFromText(transcript, count, evidenceBlock) {
+async function suggestCaptionsFromText(transcript, count, evidenceBlock, contextBlk) {
   var config = getProviderConfig();
   var names = PLATFORMS.map(function (p) { return p.name; });
-  var textPrompt = "Here is a transcript of a video clip:\n\n" + transcript + "\n\n" +
+  var textPrompt = "Here is a transcript of a video clip:\n\n" + transcript + (contextBlk || "") + "\n\n" +
     captionSuggestPrompt(names, count) + (evidenceBlock || "");
   var text = await generateText(config, { prompt: textPrompt, jsonMode: true, temperature: 0.5 });
   return parseCaptionJSON(text);
 }
 
-async function suggestCaptionsFromVideo(file, mode, count, evidenceBlock, onPhase) {
+async function suggestCaptionsFromVideo(file, mode, count, evidenceBlock, contextBlk, onPhase) {
   var config = getProviderConfig();
   var names = PLATFORMS.map(function (p) { return p.name; });
 
@@ -842,7 +852,7 @@ async function suggestCaptionsFromVideo(file, mode, count, evidenceBlock, onPhas
     if (!providerSupportsVideo(config)) {
       throw new Error("Video analysis needs Gemini — switch provider in Settings, or use transcript mode.");
     }
-    var visionPrompt = "Watch this video clip, then: " + captionSuggestPrompt(names, count) + (evidenceBlock || "");
+    var visionPrompt = "Watch this video clip, then: " + captionSuggestPrompt(names, count) + (contextBlk || "") + (evidenceBlock || "");
     var text = await generateFromMedia(config, { file: file, prompt: visionPrompt, jsonMode: true, mediaKind: "video", onPhase: onPhase });
     return parseCaptionJSON(text);
   }
@@ -851,7 +861,7 @@ async function suggestCaptionsFromVideo(file, mode, count, evidenceBlock, onPhas
   var mediaKind = (file.type || "").indexOf("video/") === 0 ? "video" : "audio";
   var transcript = await generateFromMedia(config, { file: file, prompt: TRANSCRIBE_FOR_CAPTIONS_PROMPT, mediaKind: mediaKind, onPhase: onPhase });
   onPhase("Writing captions");
-  return suggestCaptionsFromText(transcript, count, evidenceBlock);
+  return suggestCaptionsFromText(transcript, count, evidenceBlock, contextBlk);
 }
 
 $("#suggestBtn").addEventListener("click", async function () {
@@ -867,6 +877,8 @@ $("#suggestBtn").addEventListener("click", async function () {
   var count = parseInt(countInput ? countInput.value : "3", 10);
   var ev = loadHooklabEvidence();
   var evidenceBlock = hooklabEvidenceBlock(ev);
+  var ctxEl = $("#clipContext");
+  var contextBlk = clipContextBlock(ctxEl ? ctxEl.value : "");
   var btn = $("#suggestBtn");
   var label = $("#suggestLabel");
   btn.disabled = true;
@@ -875,10 +887,10 @@ $("#suggestBtn").addEventListener("click", async function () {
     var results;
     if (transcriptText) {
       label.textContent = "Writing captions…";
-      results = await suggestCaptionsFromText(transcriptText, count, evidenceBlock);
+      results = await suggestCaptionsFromText(transcriptText, count, evidenceBlock, contextBlk);
     } else {
       var mode = $("#modeVision").checked ? "vision" : "transcript";
-      results = await suggestCaptionsFromVideo(pendingFile, mode, count, evidenceBlock, function (phase) {
+      results = await suggestCaptionsFromVideo(pendingFile, mode, count, evidenceBlock, contextBlk, function (phase) {
         label.textContent = phase + "…";
       });
     }
