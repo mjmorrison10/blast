@@ -8,12 +8,12 @@ import { generateText, generateFromMedia, providerSupportsVideo } from "./llm.js
 
 function $(sel) { return document.querySelector(sel); }
 
-function toast(msg) {
+function toast(msg, ms) {
   var el = $("#toast");
   el.textContent = msg;
   el.classList.add("show");
   clearTimeout(toast._t);
-  toast._t = setTimeout(function () { el.classList.remove("show"); }, 2600);
+  toast._t = setTimeout(function () { el.classList.remove("show"); }, ms || 2600);
 }
 
 $("#theme").addEventListener("click", function () {
@@ -689,7 +689,7 @@ document.addEventListener("keydown", function (e) {
 });
 
 // === Adapt caption per platform (provider-aware: Gemini or OpenRouter) ===
-async function adaptCaptionsForPlatforms(baseCaption) {
+async function adaptCaptionsForPlatforms(baseCaption, onPhase) {
   var names = PLATFORMS.map(function (p) { return p.name; });
   var prompt = "You write short-form video captions. Given this base caption, rewrite it tailored " +
     "to each platform's real conventions (typical length, hashtag style, tone) while keeping the " +
@@ -697,11 +697,8 @@ async function adaptCaptionsForPlatforms(baseCaption) {
     "\n\nRespond with ONLY a JSON object whose keys are exactly the platform names above and whose " +
     "values are the tailored caption strings. No markdown, no explanation, no extra keys.";
 
-  var text = await generateText(getProviderConfig(), { prompt: prompt, jsonMode: true, temperature: 0.4 });
-  var parsed;
-  try { parsed = JSON.parse(text); }
-  catch (e) { throw new Error("Model returned something that wasn't valid JSON"); }
-  return parsed;
+  var text = await generateText(getProviderConfig(), { prompt: prompt, jsonMode: true, temperature: 0.4, onPhase: onPhase });
+  return parseCaptionJSON(text);
 }
 
 $("#adaptBtn").addEventListener("click", async function () {
@@ -713,7 +710,7 @@ $("#adaptBtn").addEventListener("click", async function () {
   btn.textContent = "Adapting…";
   label.textContent = getProviderConfig().provider === "openrouter" ? "Calling OpenRouter…" : "Calling Gemini…";
   try {
-    var adapted = await adaptCaptionsForPlatforms(base);
+    var adapted = await adaptCaptionsForPlatforms(base, function (phase) { label.textContent = phase + "…"; });
     PLATFORMS.forEach(function (p) {
       if (typeof adapted[p.name] === "string" && adapted[p.name].trim()) {
         platformCaptions[p.name] = adapted[p.name].trim();
@@ -727,7 +724,7 @@ $("#adaptBtn").addEventListener("click", async function () {
     console.error(err);
     label.textContent = "";
     var msg = err && err.message ? err.message : "unknown error";
-    toast("Couldn't adapt captions: " + msg);
+    toast("Couldn't adapt captions: " + msg, 6000);
     if (/no (gemini|openrouter) api key/i.test(msg)) openSettings();
   } finally {
     btn.disabled = false;
@@ -771,8 +768,23 @@ function captionSuggestPrompt(names, count) {
 }
 
 function parseCaptionJSON(text) {
-  try { return JSON.parse(text); }
-  catch (e) { throw new Error("Model returned something that wasn't valid JSON"); }
+  var t = String(text == null ? "" : text).trim();
+  // Rescue the common near-miss: valid JSON wrapped in a markdown fence.
+  var fenced = t.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/);
+  if (fenced) t = fenced[1];
+  try { return JSON.parse(t); }
+  catch (e) {
+    // Providers under rate pressure often return the limit notice as PROSE
+    // with HTTP 200, which sails past the status-code checks in llm.js and
+    // lands here. Name the real problem instead of a generic JSON error —
+    // on a phone this toast is the only diagnostics the user gets.
+    if (/rate.?limit|too many requests|\b429\b|quota|resource.?exhausted/i.test(t)) {
+      throw new Error("Provider rate limited — wait a minute and retry, or switch provider/key in Settings");
+    }
+    var snip = t.replace(/\s+/g, " ").trim().slice(0, 120);
+    if (!snip) throw new Error("Model returned an empty response");
+    throw new Error("Model didn't return JSON — it said: “" + snip + (t.length > 120 ? "…" : "") + "”");
+  }
 }
 
 // === HOOKLAB evidence (same-origin localStorage read; personalizes prompts) ===
@@ -835,12 +847,12 @@ function renderHookStatus() {
   if (link) link.addEventListener("click", function () { window.open(HOOKLAB_URL, "_blank", "noopener"); });
 }
 
-async function suggestCaptionsFromText(transcript, count, evidenceBlock, contextBlk) {
+async function suggestCaptionsFromText(transcript, count, evidenceBlock, contextBlk, onPhase) {
   var config = getProviderConfig();
   var names = PLATFORMS.map(function (p) { return p.name; });
   var textPrompt = "Here is a transcript of a video clip:\n\n" + transcript + (contextBlk || "") + "\n\n" +
     captionSuggestPrompt(names, count) + (evidenceBlock || "");
-  var text = await generateText(config, { prompt: textPrompt, jsonMode: true, temperature: 0.5 });
+  var text = await generateText(config, { prompt: textPrompt, jsonMode: true, temperature: 0.5, onPhase: onPhase });
   return parseCaptionJSON(text);
 }
 
@@ -861,7 +873,7 @@ async function suggestCaptionsFromVideo(file, mode, count, evidenceBlock, contex
   var mediaKind = (file.type || "").indexOf("video/") === 0 ? "video" : "audio";
   var transcript = await generateFromMedia(config, { file: file, prompt: TRANSCRIBE_FOR_CAPTIONS_PROMPT, mediaKind: mediaKind, onPhase: onPhase });
   onPhase("Writing captions");
-  return suggestCaptionsFromText(transcript, count, evidenceBlock, contextBlk);
+  return suggestCaptionsFromText(transcript, count, evidenceBlock, contextBlk, onPhase);
 }
 
 $("#suggestBtn").addEventListener("click", async function () {
@@ -885,14 +897,13 @@ $("#suggestBtn").addEventListener("click", async function () {
   btn.textContent = "Analyzing…";
   try {
     var results;
+    var onPhase = function (phase) { label.textContent = phase + "…"; };
     if (transcriptText) {
       label.textContent = "Writing captions…";
-      results = await suggestCaptionsFromText(transcriptText, count, evidenceBlock, contextBlk);
+      results = await suggestCaptionsFromText(transcriptText, count, evidenceBlock, contextBlk, onPhase);
     } else {
       var mode = $("#modeVision").checked ? "vision" : "transcript";
-      results = await suggestCaptionsFromVideo(pendingFile, mode, count, evidenceBlock, contextBlk, function (phase) {
-        label.textContent = phase + "…";
-      });
+      results = await suggestCaptionsFromVideo(pendingFile, mode, count, evidenceBlock, contextBlk, onPhase);
     }
     PLATFORMS.forEach(function (p) {
       var arr = results[p.name];
@@ -910,7 +921,7 @@ $("#suggestBtn").addEventListener("click", async function () {
     console.error(err);
     label.textContent = "";
     var msg = err && err.message ? err.message : "unknown error";
-    toast("Couldn't suggest captions: " + msg);
+    toast("Couldn't suggest captions: " + msg, 6000);
     if (/no (gemini|openrouter) api key/i.test(msg)) openSettings();
   } finally {
     btn.disabled = false;
