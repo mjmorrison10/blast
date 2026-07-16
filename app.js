@@ -683,6 +683,7 @@ if (window.StackData) {
     if (f) window.StackData.importFromFile(f, toast);
     e.target.value = "";
   });
+  if (window.StackData.bindSyncUI) window.StackData.bindSyncUI(toast);
 }
 document.addEventListener("keydown", function (e) {
   if (e.key === "Escape" && settingscrim.classList.contains("open")) closeSettings();
