@@ -25,11 +25,18 @@
   // (no secret in the token flow); it stays a placeholder until the owner
   // completes the one-time Google Cloud setup — until then sync is a no-op
   // with a friendly toast.
-  var DRIVE_CLIENT_ID = "REPLACE_WITH_OAUTH_CLIENT_ID";
+  var DRIVE_CLIENT_ID = "695946260157-i2mlinkucs93c4le05buv5lcj0cceln1.apps.googleusercontent.com";
   var DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file";
-  var SYNC_FILE_NAME = "mjm-stack-sync.json";
-  var SYNC_MARKER = { app: "mjm-stack" };
   function isConfigured() { return DRIVE_CLIENT_ID && DRIVE_CLIENT_ID.indexOf("REPLACE_WITH") === -1; }
+  // Each workspace gets its OWN sync file in the same Drive, so one Google
+  // account can run several stacks (two social accounts) without them fighting
+  // over one file. Discovery is by appProperties (app + ws id); the filename
+  // just carries the workspace name so it's recognizable in the Drive UI.
+  function syncMarker(ws) { return { app: "mjm-stack", ws: (ws && ws.id) || "default" }; }
+  function syncFileName(ws) {
+    var slug = ((ws && ws.name) || "workspace").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "workspace";
+    return "mjm-stack-sync-" + slug + ".json";
+  }
 
   // Keys that NEVER leave the device via Drive/merge: secrets, device prefs,
   // regenerable caches, and transient inboxes. mergeStates strips these from
@@ -46,6 +53,17 @@
   // Excluded from EVERY export, including local file backups (device-specific
   // Drive bookkeeping must not travel to another machine).
   var ALWAYS_EXCLUDE = ["stack_sync_meta_v1"];
+
+  // On a REPLACE restore we wipe all stack app-data keys first (so switching
+  // to a stack that lacks PULSE/BLAST data doesn't leave the old stack's data
+  // behind). These device-scoped keys survive the wipe, because a backup that
+  // simply doesn't carry API keys/themes shouldn't blank them on this device;
+  // when the backup DOES carry them, the overlay overwrites them anyway.
+  var DEVICE_PRESERVE = [
+    "stack_settings_v1",
+    "recall_settings_v1", "hooklab_settings_v1", "blast_settings_v1", "pulse_settings_v1",
+    "hooklab_theme", "blast-theme", "pulse-theme"
+  ];
 
   // ---------- shared API keys (Part A) ----------
   function readShared() {
@@ -123,6 +141,20 @@
       return new Promise(function (resolve) {
         try {
           var tx = db.transaction(IDB_STORE, "readwrite").objectStore(IDB_STORE).put(value, IDB_KEY);
+          tx.onsuccess = function () { resolve(true); };
+          tx.onerror = function () { resolve(false); };
+        } catch (e) { resolve(false); }
+      });
+    }).catch(function () { return false; });
+  }
+  // Only used by a REPLACE restore whose backup carries no library — clears the
+  // old stack's library so it can't leak. (Sync/merge never call this: an
+  // apply must never destroy the library on a transient read failure.)
+  function clearRecallLibrary() {
+    return openIDB().then(function (db) {
+      return new Promise(function (resolve) {
+        try {
+          var tx = db.transaction(IDB_STORE, "readwrite").objectStore(IDB_STORE)["delete"](IDB_KEY);
           tx.onsuccess = function () { resolve(true); };
           tx.onerror = function () { resolve(false); };
         } catch (e) { resolve(false); }
@@ -259,7 +291,12 @@
       var bmap = {}, border = [];
       function addBin(arr) { (arr || []).forEach(function (bn) { if (!bn || bn.key == null || !smap[bn.srcId]) return; if (!bmap[bn.key]) border.push(bn.key); bmap[bn.key] = bn; }); }
       addBin(older.bin); addBin(newer.bin);
-      mergedLib = { sources: sorder.map(function (id) { return smap[id]; }), enabled: Object.keys(enSet), bin: border.map(function (k) { return bmap[k]; }) };
+      // Stable ordering (by id / key) so the merged output is a pure function
+      // of the DATA, not of which side happened to be "newer" — this makes the
+      // merge strictly idempotent (merge(merge(a,b),b) === merge(a,b)). RECALL
+      // re-lists sources from this array; order is post-merge canonical.
+      sorder.sort(); border.sort();
+      mergedLib = { sources: sorder.map(function (id) { return smap[id]; }), enabled: Object.keys(enSet).sort(), bin: border.map(function (k) { return bmap[k]; }) };
     }
 
     // ---- recall_topclips_v1 (per-source scan cache; greater savedAt wins) ----
@@ -270,7 +307,14 @@
       var ea = tcA[id2], eb = tcB[id2];
       tcOut[id2] = (ea && eb) ? (((ea.savedAt || 0) >= (eb.savedAt || 0)) ? ea : eb) : (ea || eb);
     }
-    if (Object.keys(tcOut).length) out["recall_topclips_v1"] = JSON.stringify(tcOut);
+    // Emit whenever either side had the key, even if the merged result is
+    // empty, so a tombstone that clears the last entry propagates on an
+    // overlay (sync) apply instead of leaving a stale local value behind.
+    // Sorted keys keep the serialized output stable (idempotence).
+    if (aLS["recall_topclips_v1"] != null || bLS["recall_topclips_v1"] != null) {
+      var tcSorted = {}; Object.keys(tcOut).sort().forEach(function (k) { tcSorted[k] = tcOut[k]; });
+      out["recall_topclips_v1"] = JSON.stringify(tcSorted);
+    }
 
     // ---- PULSE posts (union by id, then dupe-collapse, snapshots merged) ----
     var paA = pj(aLS["pulse_posts_v1"], []), paB = pj(bLS["pulse_posts_v1"], []);
@@ -290,15 +334,17 @@
         dkeys.forEach(function (dk) { byDupe[dk] = keep; });
       } else dkeys.forEach(function (dk) { if (byDupe[dk] == null) byDupe[dk] = id; });
     });
-    var finalPosts = porder.map(function (id) { return pmap[id]; }).filter(Boolean);
-    if (finalPosts.length) out["pulse_posts_v1"] = JSON.stringify(finalPosts);
+    // Stable order by id (PULSE re-sorts by postedAt on render, so display is
+    // unaffected; this only fixes serialization order for idempotence).
+    var finalPosts = porder.map(function (id) { return pmap[id]; }).filter(Boolean).sort(function (x, y) { return x.id < y.id ? -1 : x.id > y.id ? 1 : 0; });
+    if (aLS["pulse_posts_v1"] != null || bLS["pulse_posts_v1"] != null) out["pulse_posts_v1"] = JSON.stringify(finalPosts);
 
     // ---- HOOKLAB ledger + comps (union by id, newest edit wins, tombstoned) ----
     var hA = pj(aLS["hooklab_state_v1"], {}), hB = pj(bLS["hooklab_state_v1"], {});
     var ledgerOut = mergeById(hA.ledger || [], hB.ledger || [], aNew, "hooklabLedger", tomb, function (x) { return Date.parse(x.editedAt || x.createdAt) || 0; });
     ledgerOut = applyLedgerCollapses(ledgerOut, collapses);
     var compsOut = mergeById(hA.comps || [], hB.comps || [], aNew, "hooklabComp", tomb, function (x) { return Date.parse(x.createdAt) || 0; });
-    if (ledgerOut.length || compsOut.length || Object.keys(hA).length || Object.keys(hB).length) {
+    if (aLS["hooklab_state_v1"] != null || bLS["hooklab_state_v1"] != null) {
       var hMerged = {}, hk; var hNewer = aNew ? hA : hB, hOlder = aNew ? hB : hA;
       for (hk in hOlder) hMerged[hk] = hOlder[hk];
       for (hk in hNewer) hMerged[hk] = hNewer[hk];
@@ -315,15 +361,16 @@
 
     // ---- BLAST presets (per-platform-key union) ----
     var prA = pj(aLS["blast_presets_v1"], {}), prB = pj(bLS["blast_presets_v1"], {}), prOut = {}, pk;
-    var prNewer = aNew ? prA : prB, prOlder = aNew ? prB : prA;
-    for (pk in prOlder) prOut[pk] = prOlder[pk];
-    for (pk in prNewer) prOut[pk] = prNewer[pk];
-    if (Object.keys(prOut).length) out["blast_presets_v1"] = JSON.stringify(prOut);
+    var prNewer = aNew ? prA : prB, prOlder = aNew ? prB : prA, prTmp = {};
+    for (pk in prOlder) prTmp[pk] = prOlder[pk];
+    for (pk in prNewer) prTmp[pk] = prNewer[pk];
+    Object.keys(prTmp).sort().forEach(function (k) { prOut[k] = prTmp[k]; }); // sorted for idempotence
+    if (aLS["blast_presets_v1"] != null || bLS["blast_presets_v1"] != null) out["blast_presets_v1"] = JSON.stringify(prOut);
 
     // ---- workspace + tombstones ----
     var ws = pj(aLS[LS_WORKSPACE], null) || pj(bLS[LS_WORKSPACE], null);
     if (ws) out[LS_WORKSPACE] = JSON.stringify(ws);
-    if (Object.keys(tomb).length) out[LS_TOMBSTONES] = JSON.stringify(tomb);
+    if (Object.keys(tomb).length) { var tombSorted = {}; Object.keys(tomb).sort().forEach(function (k) { tombSorted[k] = tomb[k]; }); out[LS_TOMBSTONES] = JSON.stringify(tombSorted); }
 
     // ---- unknown / future stack-prefixed keys (forward-compatible) ----
     var HANDLED = { "recall_topclips_v1": 1, "pulse_posts_v1": 1, "hooklab_state_v1": 1, "blast_session_v1": 1, "blast_presets_v1": 1 };
@@ -331,12 +378,12 @@
     var excl = {}; SYNC_EXCLUDE.concat(ALWAYS_EXCLUDE).forEach(function (k) { excl[k] = 1; });
     var allKeys = {}, uk;
     for (uk in aLS) allKeys[uk] = 1; for (uk in bLS) allKeys[uk] = 1;
-    for (uk in allKeys) {
-      if (HANDLED[uk] || excl[uk] || !isStackKey(uk)) continue;
+    Object.keys(allKeys).sort().forEach(function (uk) { // sorted for idempotence
+      if (HANDLED[uk] || excl[uk] || !isStackKey(uk)) return;
       var va = aLS[uk], vb = bLS[uk];
       if (va != null && vb != null) { if (va !== vb) { out[uk] = aNew ? va : vb; report.unknownKeys.push(uk); } else out[uk] = va; }
       else out[uk] = va != null ? va : vb;
-    }
+    });
 
     report.added.sources = mergedLib ? mergedLib.sources.length : 0;
     report.added.posts = finalPosts.length;
@@ -385,14 +432,30 @@
   }
   function readSharedFrom(ls) { try { return JSON.parse(ls["stack_settings_v1"]) || {}; } catch (e) { return {}; } }
 
-  function importAll(data) {
+  // opts.replace = true → REPLACE semantics (STACK RESTORE): wipe all stack
+  // app-data keys first so switching to a backup that lacks some apps' data
+  // doesn't leave the previous stack's data behind. Device keys/themes are
+  // preserved. Without replace it's a per-key OVERLAY (used by sync/merge).
+  function importAll(data, opts) {
     if (!isStackBackup(data)) return Promise.reject(new Error("Not a stack backup file"));
     if ((data.version || 1) > 2) return Promise.reject(new Error("This backup is from a newer version of the app — update first"));
+    var replace = !!(opts && opts.replace);
     var ls = data.localStorage || {};
+    if (replace) {
+      var preserve = {}; DEVICE_PRESERVE.forEach(function (k) { preserve[k] = 1; });
+      stackKeys().forEach(function (k) {
+        if (preserve[k]) return;
+        try { localStorage.removeItem(k); } catch (e) {}
+      });
+    }
     Object.keys(ls).forEach(function (k) {
       try { if (ls[k] != null) localStorage.setItem(k, ls[k]); } catch (e) {}
     });
-    return writeRecallLibrary(data.recallLibrary).then(function () { return true; });
+    // In replace mode a backup with no library must CLEAR the old one (else the
+    // previous stack's RECALL library leaks). Overlay mode keeps the no-op.
+    if (data.recallLibrary) return writeRecallLibrary(data.recallLibrary).then(function () { return true; });
+    if (replace) return clearRecallLibrary().then(function () { return true; });
+    return Promise.resolve(true);
   }
 
   // ---------- Google Drive layer ----------
@@ -439,15 +502,18 @@
     });
   }
   function httpErr(res) { return { status: res.status, message: "Drive error " + res.status }; }
-  function driveFind(token) {
-    var q = "appProperties has { key='app' and value='mjm-stack' } and trashed=false";
+  function driveFind(token, wsId) {
+    // Scope the search to THIS workspace's file (one file per workspace in the
+    // same Drive), so two stacks on one Google account don't share a file.
+    var q = "appProperties has { key='app' and value='mjm-stack' } and appProperties has { key='ws' and value='" + wsId + "' } and trashed=false";
     var url = "https://www.googleapis.com/drive/v3/files?q=" + encodeURIComponent(q) + "&fields=files(id,modifiedTime)&pageSize=10";
     return driveFetch(token, url, { method: "GET" }).then(function (res) {
       if (!res.ok) throw httpErr(res); return res.json();
     }).then(function (j) {
       var files = (j && j.files) || []; if (!files.length) return null;
       var meta = getSyncMeta();
-      if (meta.fileId) { for (var i = 0; i < files.length; i++) if (files[i].id === meta.fileId) return files[i]; }
+      // Only trust a stored fileId if it belongs to this same workspace.
+      if (meta.fileId && meta.wsId === wsId) { for (var i = 0; i < files.length; i++) if (files[i].id === meta.fileId) return files[i]; }
       return files[0];
     });
   }
@@ -487,14 +553,14 @@
     opts = opts || {};
     var status = opts.onStatus || function () {}, onErr = opts.onErr || function () {}, onDone = opts.onDone || function () {};
     if (!isConfigured()) { onErr("Drive sync isn't set up yet (owner setup pending)"); return Promise.resolve(false); }
-    ensureWorkspace();
+    var ws = ensureWorkspace();
     var token;
     status("Connecting to Google Drive…");
     return getAccessToken().then(function (t) {
       token = t; return exportAll({ forSync: true });
     }).then(function (local) {
       status("Checking Drive…");
-      return driveFind(token).then(function (found) {
+      return driveFind(token, ws.id).then(function (found) {
         return (found ? driveDownload(token, found.id) : Promise.resolve(null)).then(function (remote) {
           return { found: found, local: local, remote: remote };
         });
@@ -520,12 +586,13 @@
         var leaked = SYNC_EXCLUDE.filter(function (k) { return lsp[k] != null; });
         if (leaked.length) { onErr("Sync aborted: refused to upload sensitive keys"); return false; }
         status("Uploading…");
-        var fileId = found ? found.id : (getSyncMeta().fileId || null);
+        var storedMeta = getSyncMeta();
+        var fileId = found ? found.id : ((storedMeta.wsId === ws.id) ? (storedMeta.fileId || null) : null);
         var up = fileId
-          ? driveUpdate(token, fileId, payload).catch(function () { return driveCreate(token, SYNC_FILE_NAME, SYNC_MARKER, payload); })
-          : driveCreate(token, SYNC_FILE_NAME, SYNC_MARKER, payload);
+          ? driveUpdate(token, fileId, payload).catch(function () { return driveCreate(token, syncFileName(ws), syncMarker(ws), payload); })
+          : driveCreate(token, syncFileName(ws), syncMarker(ws), payload);
         return up.then(function (id) {
-          setSyncMeta({ fileId: id, lastSyncAt: Date.now() });
+          setSyncMeta({ fileId: id, wsId: ws.id, lastSyncAt: Date.now() });
           onDone(report);
           status(remote ? "Synced" : "First sync — uploaded this device");
           if (opts.reload !== false) location.reload();
@@ -561,7 +628,7 @@
         var wsHere = getWorkspace(), wsFile = wsOf(data);
         if (wsHere && wsFile && wsHere.id !== wsFile.id) note = '\n\nNOTE: this backup is from workspace "' + (wsFile.name || "?") + '" — restoring switches this device to that workspace.';
         if (!confirm("Restore this backup? It REPLACES the data in RECALL, HOOKLAB, BLAST, and PULSE on this device.\n\nContains: " + summary(data) + note)) return resolve(false);
-        importAll(data).then(function () { location.reload(); resolve(true); })
+        importAll(data, { replace: true }).then(function () { location.reload(); resolve(true); })
           .catch(function (e) { if (onErr) onErr(e.message || "Import failed"); resolve(false); });
       };
       r.readAsText(file);
