@@ -14,6 +14,11 @@
 (function () {
   "use strict";
 
+  // Bumped on every deploy that users should reload for. checkForUpdate()
+  // compares this baked-in value against a cache-busted fetch of the live
+  // stackdata.js and shows an "update available" banner when they differ.
+  var STACK_BUILD = "2026-07-16.1";
+
   var LS_SHARED = "stack_settings_v1";
   var LS_WORKSPACE = "stack_workspace_v1";
   var LS_TOMBSTONES = "stack_tombstones_v1";
@@ -663,6 +668,66 @@
     });
   }
 
+  // ---------- "update available" banner ----------
+  // GitHub Pages caches every file for ~10 min (max-age=600, not
+  // configurable), so after a deploy a browser can run stale JS for a while.
+  // We can't force an instant in-window refresh uniformly (the module apps'
+  // import URLs are fixed), so we DETECT a new build and prompt a reload.
+  var SS_UPDATE_TRIED = "stack_update_tried", SS_UPDATE_DISMISSED = "stack_update_dismissed";
+  var lastUpdateCheck = 0;
+  function injectUpdateBanner(deployedBuild) {
+    if (document.getElementById("stackupdatebar")) return;
+    var tried = "";
+    try { tried = sessionStorage.getItem(SS_UPDATE_TRIED) || ""; } catch (e) {}
+    var second = tried === deployedBuild; // already reloaded once for this build, still stale
+    var bar = document.createElement("div");
+    bar.id = "stackupdatebar";
+    bar.setAttribute("role", "status");
+    bar.style.cssText = "position:fixed;left:0;right:0;bottom:0;z-index:2147483000;" +
+      "display:flex;align-items:center;gap:12px;justify-content:center;flex-wrap:wrap;" +
+      "padding:10px 14px;background:#111827;color:#f3f4f6;font:14px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;" +
+      "box-shadow:0 -2px 12px rgba(0,0,0,.35)";
+    var msg = document.createElement("span");
+    msg.textContent = second
+      ? "Still updating — GitHub is serving a cached copy for a few minutes; it will refresh on its own shortly."
+      : "A newer version is available.";
+    var btn = document.createElement("button");
+    btn.textContent = second ? "Try again" : "Reload";
+    btn.style.cssText = "cursor:pointer;border:0;border-radius:8px;padding:7px 14px;font:inherit;font-weight:700;background:#22d3ee;color:#08131a";
+    btn.addEventListener("click", function () {
+      try { sessionStorage.setItem(SS_UPDATE_TRIED, deployedBuild); } catch (e) {}
+      location.reload();
+    });
+    var x = document.createElement("button");
+    x.textContent = "✕"; x.setAttribute("aria-label", "Dismiss");
+    x.style.cssText = "cursor:pointer;border:0;background:none;color:#9ca3af;font:inherit;font-size:16px;line-height:1;padding:4px";
+    x.addEventListener("click", function () {
+      try { sessionStorage.setItem(SS_UPDATE_DISMISSED, deployedBuild); } catch (e) {}
+      bar.parentNode && bar.parentNode.removeChild(bar);
+    });
+    bar.appendChild(msg); bar.appendChild(btn); bar.appendChild(x);
+    (document.body || document.documentElement).appendChild(bar);
+  }
+  // Fire-and-forget: fetch the live stackdata.js (cache-busted) and compare its
+  // baked-in STACK_BUILD to ours. Never throws, never blocks the app.
+  function checkForUpdate() {
+    var now = Date.now();
+    if (now - lastUpdateCheck < 120000) return; // throttle to once / 2 min
+    lastUpdateCheck = now;
+    try {
+      var url = new URL("stackdata.js", location.href);
+      url.searchParams.set("bust", String(now));
+      fetch(url.toString(), { cache: "no-store" }).then(function (r) { return r.ok ? r.text() : ""; }).then(function (txt) {
+        var m = txt.match(/STACK_BUILD\s*=\s*"([^"]+)"/);
+        var deployed = m && m[1];
+        if (!deployed || deployed === STACK_BUILD) return;
+        var dismissed = ""; try { dismissed = sessionStorage.getItem(SS_UPDATE_DISMISSED) || ""; } catch (e) {}
+        if (dismissed === deployed) return; // user dismissed this exact build this session
+        injectUpdateBanner(deployed);
+      }).catch(function () {});
+    } catch (e) {}
+  }
+
   // Wire the shared Sync/Merge UI (identical ids in every app). Takes the
   // app's own toast(msg) so status/errors surface in that app's style.
   function bindSyncUI(toast) {
@@ -696,6 +761,10 @@
       mf.addEventListener("change", function (e) { var f = e.target.files && e.target.files[0]; if (f) mergeFromFile(f, { onStatus: toast, onErr: toast }); e.target.value = ""; });
     }
     refresh();
+    // Check for a newer deploy now, and again whenever the tab regains focus
+    // (catches a deploy that landed while this tab sat open).
+    checkForUpdate();
+    document.addEventListener("visibilitychange", function () { if (!document.hidden) checkForUpdate(); });
   }
 
   window.StackData = {
@@ -708,6 +777,6 @@
     syncDrive: syncDrive, mergeFromFile: mergeFromFile, mergeStates: mergeStates,
     tombstone: tombstone, getWorkspace: getWorkspace, ensureWorkspace: ensureWorkspace,
     workspaceConflict: workspaceConflict, getSyncMeta: getSyncMeta, isSyncConfigured: isConfigured,
-    bindSyncUI: bindSyncUI,
+    bindSyncUI: bindSyncUI, checkForUpdate: checkForUpdate, build: STACK_BUILD,
   };
 })();
