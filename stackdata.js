@@ -17,7 +17,7 @@
   // Bumped on every deploy that users should reload for. checkForUpdate()
   // compares this baked-in value against a cache-busted fetch of the live
   // stackdata.js and shows an "update available" banner when they differ.
-  var STACK_BUILD = "2026-07-16.1";
+  var STACK_BUILD = "2026-07-16.2";
 
   var LS_SHARED = "stack_settings_v1";
   var LS_WORKSPACE = "stack_workspace_v1";
@@ -506,14 +506,27 @@
       return res;
     });
   }
-  function httpErr(res) { return { status: res.status, message: "Drive error " + res.status }; }
+  // Read Google's error body so callers get the REAL reason (e.g.
+  // accessNotConfigured = Drive API not enabled), not just the status code.
+  function httpErr(res) {
+    return res.text().then(function (t) {
+      var reason = "", message = "";
+      try {
+        var e = (JSON.parse(t) || {}).error || {};
+        message = e.message || "";
+        reason = (e.errors && e.errors[0] && e.errors[0].reason) || e.status || "";
+      } catch (x) {}
+      return { status: res.status, reason: reason, message: message };
+    }).catch(function () { return { status: res.status, reason: "", message: "" }; });
+  }
   function driveFind(token, wsId) {
     // Scope the search to THIS workspace's file (one file per workspace in the
     // same Drive), so two stacks on one Google account don't share a file.
     var q = "appProperties has { key='app' and value='mjm-stack' } and appProperties has { key='ws' and value='" + wsId + "' } and trashed=false";
     var url = "https://www.googleapis.com/drive/v3/files?q=" + encodeURIComponent(q) + "&fields=files(id,modifiedTime)&pageSize=10";
     return driveFetch(token, url, { method: "GET" }).then(function (res) {
-      if (!res.ok) throw httpErr(res); return res.json();
+      if (!res.ok) return httpErr(res).then(function (e) { throw e; });
+      return res.json();
     }).then(function (j) {
       var files = (j && j.files) || []; if (!files.length) return null;
       var meta = getSyncMeta();
@@ -525,7 +538,7 @@
   function driveDownload(token, id) {
     return driveFetch(token, "https://www.googleapis.com/drive/v3/files/" + id + "?alt=media", { method: "GET" }).then(function (res) {
       if (res.status === 404) { setSyncMeta({ fileId: null }); return null; }
-      if (!res.ok) throw httpErr(res);
+      if (!res.ok) return httpErr(res).then(function (e) { throw e; });
       return res.json();
     });
   }
@@ -536,17 +549,30 @@
       "\r\n--" + boundary + "\r\nContent-Type: application/json\r\n\r\n" + JSON.stringify(obj) + "\r\n--" + boundary + "--";
     return driveFetch(token, "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id",
       { method: "POST", headers: { "Content-Type": "multipart/related; boundary=" + boundary }, body: body })
-      .then(function (res) { if (!res.ok) throw httpErr(res); return res.json(); }).then(function (j) { return j.id; });
+      .then(function (res) { if (!res.ok) return httpErr(res).then(function (e) { throw e; }); return res.json(); }).then(function (j) { return j.id; });
   }
   function driveUpdate(token, id, obj) {
     return driveFetch(token, "https://www.googleapis.com/upload/drive/v3/files/" + id + "?uploadType=media&fields=id",
       { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(obj) })
-      .then(function (res) { if (!res.ok) throw httpErr(res); return res.json(); }).then(function (j) { return j.id; });
+      .then(function (res) { if (!res.ok) return httpErr(res).then(function (e) { throw e; }); return res.json(); }).then(function (j) { return j.id; });
   }
   function driveErrMsg(e) {
     var s = e && e.status;
-    if (s === 403) return "Google Drive upload failed — your Drive may be full or access was revoked";
-    if (e && e.message) return e.message;
+    var r = ((e && e.reason) || "").toLowerCase();
+    var m = (e && e.message) || "";
+    var blob = (r + " " + m).toLowerCase();
+    if (s === 403) {
+      if (/accessnotconfigured|has not been used|is disabled|not been enabled/.test(blob))
+        return "Google Drive isn't enabled for your Cloud project yet — turn on the Drive API (Google Cloud > APIs & Services > Library > Google Drive API > Enable), wait about a minute, then Sync again.";
+      if (/insufficient(permissions|scopes)|scope/.test(blob))
+        return "Sync doesn't have Drive permission — reload and approve the Google prompt again (it needs the drive.file access).";
+      if (/storagequota/.test(blob))
+        return "Your Google Drive is full — free up space and try again.";
+      if (/ratelimit|userratelimit|dailylimit|quotaexceeded/.test(blob))
+        return "Google Drive is rate-limiting sync — wait a minute and try again.";
+      return "Google Drive refused the request (403)" + (m ? ": " + m : " — check the Drive API is enabled and access is still granted.");
+    }
+    if (m) return m;
     return "Drive sync failed — check your connection and try again";
   }
 
