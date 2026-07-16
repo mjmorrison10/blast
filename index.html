@@ -235,6 +235,13 @@
           <button class="btn ghost" id="stackimport" type="button">Import…</button>
           <input type="file" id="stackfile" accept="application/json,.json" style="display:none">
         </div>
+        <div class="keyrow" style="margin-top:8px">
+          <button class="btn primary" id="stacksync" type="button">Sync Google Drive</button>
+          <button class="btn ghost" id="stackmerge" type="button">Merge a file…</button>
+          <input type="file" id="stackmergefile" accept="application/json,.json" style="display:none">
+        </div>
+        <p class="hint" style="margin:8px 0 4px">Sync keeps this device and your phone in step through <b>your own</b> Google Drive (never uploads your API keys). Merge folds another backup in without deleting anything.</p>
+        <div class="hint" id="syncstatus"></div>
       </div>
     </div>
     <div class="mfoot">
