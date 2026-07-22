@@ -95,6 +95,14 @@
           <label class="radiopill"><input type="radio" name="suggestCount" value="5">5</label>
         </div>
       </div>
+      <div class="actionrow" style="flex-wrap:wrap;margin-bottom:14px">
+        <span class="hint" style="margin-right:2px">Caption length <span style="opacity:.7">(Adapt + Suggest)</span>:</span>
+        <div class="providerrow" id="lengthGroup">
+          <label class="radiopill"><input type="radio" name="captionLength" value="short">Short</label>
+          <label class="radiopill"><input type="radio" name="captionLength" value="medium" checked>Medium</label>
+          <label class="radiopill"><input type="radio" name="captionLength" value="long">Long</label>
+        </div>
+      </div>
       <div class="actionrow">
         <button class="btn primary" id="suggestBtn" type="button">Suggest captions →</button>
         <span class="progress" id="suggestLabel"></span>

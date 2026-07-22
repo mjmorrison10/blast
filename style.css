@@ -193,6 +193,10 @@ input#videohook:focus{outline:none;border-color:var(--brand)}
   border-radius:8px;padding:7px 10px;color:var(--ink);font-family:var(--mono);font-size:11px}
 .platformcard .posturl:focus{outline:none;border-color:var(--brand)}
 .platformcard .posturl::placeholder{color:var(--faint)}
+.platformcard .ptitle{width:100%;margin-bottom:6px;background:var(--ground);border:1px solid var(--border);
+  border-radius:8px;padding:7px 10px;color:var(--ink);font-size:13px;font-weight:600}
+.platformcard .ptitle:focus{outline:none;border-color:var(--brand)}
+.platformcard .ptitle::placeholder{color:var(--faint);font-weight:400}
 
 /* session bar */
 .sessionbar{display:flex;align-items:center;gap:14px;flex-wrap:wrap;
