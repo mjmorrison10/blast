@@ -57,6 +57,55 @@ var PLATFORM_RULES = {
 };
 var DEFAULT_RULES = { limit: 2200, hashtagMax: 10 };
 
+// Per-platform target caption lengths for the Short/Medium/Long preference, in
+// characters. The hard cap always comes from PLATFORM_RULES[name].limit and is
+// never exceeded; these targets just steer the model within it. Snapchat stays
+// short at every setting (it's a tiny overlay); YouTube's cap dominates because
+// it's the visible Short title.
+var LENGTH_TARGETS = {
+  "YouTube Shorts":     { short: "under 50",  medium: "60-90",    long: "90-100" },
+  "TikTok":             { short: "under 100", medium: "150-300",  long: "400-700" },
+  "Instagram Reels":    { short: "under 125", medium: "300-600",  long: "900-1500" },
+  "Snapchat Spotlight": { short: "under 40",  medium: "under 80", long: "under 80" },
+  "Facebook Reels":     { short: "under 100", medium: "200-400",  long: "700-1200" },
+  "X":                  { short: "under 120", medium: "180-260",  long: "260-280" },
+  "Threads":            { short: "under 120", medium: "200-350",  long: "400-500" },
+  "LinkedIn":           { short: "under 200", medium: "400-800",  long: "1200-2000" },
+  "Pinterest":          { short: "under 120", medium: "200-350",  long: "400-500" },
+};
+// Caption-length preference (Short/Medium/Long). Kept in its OWN localStorage
+// key on purpose — the Settings save handler rewrites blast_settings_v1 wholesale
+// (provider + keys only), so a pref stored there would be wiped on every save.
+var LS_CAPTION_LEN = "blast_caption_len_v1";
+function getCaptionLengthPref() {
+  var v = "";
+  try { v = localStorage.getItem(LS_CAPTION_LEN) || ""; } catch (e) {}
+  return (v === "short" || v === "long") ? v : "medium";
+}
+// The length instruction block appended to both AI prompts. Feeds the model the
+// hard caps (which it never otherwise sees) plus a target range per platform,
+// and asks IG/FB/LinkedIn for genuinely long, story-style captions on "long".
+function lengthGuidanceBlock(pref) {
+  var story = { "Instagram Reels": 1, "Facebook Reels": 1, "LinkedIn": 1 };
+  var lines = PLATFORMS.map(function (p) {
+    var cap = (PLATFORM_RULES[p.name] || DEFAULT_RULES).limit;
+    var tgt = (LENGTH_TARGETS[p.name] || {})[pref] || "";
+    var line = "- " + p.name + ": hard cap " + cap + " chars (never exceed); aim for " + tgt + " chars.";
+    if (p.name === "Snapchat Spotlight") line += " Always <=80 no matter the preference — it's a short overlay.";
+    if (p.name === "YouTube Shorts") line += " This is the Short's visible title, so keep it tight.";
+    if (pref === "long" && story[p.name]) {
+      line += " Write a genuinely long, story-style caption: a scroll-stopping first line, then several short" +
+        " paragraphs of real substance the reader will stop to read while the video plays, a clear call to" +
+        " action, and hashtags last.";
+    }
+    return line;
+  });
+  return "\n\nCaption length — the creator wants " + pref.toUpperCase() + " captions. The hard caps below are" +
+    " ABSOLUTE; land each caption inside its target range:\n" + lines.join("\n") +
+    "\nFor \"Pinterest\" the value is an object (see below); its title has a hard cap of 100 chars and its" +
+    " description follows the Pinterest target above.";
+}
+
 // Compose-intent URLs — X and Threads accept a prefilled ?text= param, so
 // "Copy + open" can land the user in a compose window with the caption already
 // in it. Everything else only has an upload page and keeps the plain URL +
@@ -66,12 +115,37 @@ var INTENT_URLS = {
   "Threads": function (t) { return "https://www.threads.net/intent/post?text=" + encodeURIComponent(t); },
 };
 var INTENT_URL_MAX = 2000; // encoded chars — both platforms' caption limits fit well under this
-function openUrlFor(p, text) {
+
+// On a phone, a couple of web URLs misbehave inside the platform's in-app
+// browser. X's web intent gets hijacked by the X app into an in-app browser
+// that then freezes; TikTok's web upload page is useless without a desktop
+// login. For those two we launch the native app instead. Everything else keeps
+// its https URL on every device. The clipboard copy still happens first, so an
+// app that isn't installed just does nothing and the caption is already saved.
+var IS_MOBILE = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+var SCHEME_URLS = {
+  "X":      function (t) { return "twitter://post?message=" + encodeURIComponent(t); },
+  // TikTok has no public upload deep link; snssdk1233:// just foregrounds the
+  // app (1233 is its iOS app id). If this ever no-ops on a device, try tiktok://.
+  "TikTok": function ()  { return "snssdk1233://"; },
+};
+// Chooses where "Copy + open" sends the user: { url, mode }. mode "scheme"
+// launches a native app via location.href (the reliable iOS pattern — a
+// window.open on a custom scheme leaves a blank or popup-blocked tab); mode
+// "tab" opens a web URL in a new tab, exactly as before.
+function navTarget(p, text) {
+  if (IS_MOBILE && SCHEME_URLS[p.name]) {
+    var u = SCHEME_URLS[p.name](text);
+    return { url: u.length <= INTENT_URL_MAX ? u : u.split("?")[0], mode: "scheme" };
+  }
   var build = INTENT_URLS[p.name];
-  if (!build) return p.url;
-  var u = build(text);
-  return u.length <= INTENT_URL_MAX ? u : p.url; // absurdly long → plain page; clipboard is the backup
+  if (!build) return { url: p.url, mode: "tab" };
+  var w = build(text);
+  return { url: w.length <= INTENT_URL_MAX ? w : p.url, mode: "tab" }; // absurdly long → plain page
 }
+// Test hook — lets the headless suite assert the per-platform target under a
+// mobile UA without a real device. Harmless in production.
+if (typeof window !== "undefined") window.__navTarget = navTarget;
 var EMOJI_MAX = 8;            // more than this reads as spammy
 var ALLCAPS_MIN_LETTERS = 15; // don't flag short acronyms as "all caps"
 var NEAR_RATIO = 0.9;         // amber once the caption hits 90% of the limit
@@ -80,6 +154,10 @@ var NEAR_RATIO = 0.9;         // amber once the caption hits 90% of the limit
 // "Suggest captions from video" (or left blank to fall back to the shared
 // base caption). Keyed by platform name.
 var platformCaptions = {};
+// Pinterest is the one platform with a separate title + description. The title
+// lives here (keyed by name, though only "Pinterest" is ever set); the
+// description reuses platformCaptions like every other platform's single caption.
+var platformTitles = {};
 // AI-suggested caption options per platform, from "Suggest captions from
 // video", plus which option (if any) is currently picked for that platform.
 var platformSuggestions = {};
@@ -132,6 +210,7 @@ function saveSession() {
       videoHook: (document.querySelector("#videohook") || {}).value || "",
       transcript: (document.querySelector("#transcript") || {}).value || "",
       captions: platformCaptions,
+      titles: platformTitles,
       suggestions: platformSuggestions,
       picked: platformPickedIdx,
       status: platformStatus,
@@ -147,6 +226,7 @@ function loadSession() {
     var s = JSON.parse(localStorage.getItem(LS_SESSION));
     if (!s) return;
     platformCaptions = s.captions || {};
+    platformTitles = s.titles || {};
     platformSuggestions = s.suggestions || {};
     platformPickedIdx = s.picked || {};
     platformStatus = s.status || {};
@@ -162,7 +242,7 @@ function loadSession() {
   } catch (e) { /* corrupt — start fresh */ }
 }
 function resetSession() {
-  platformCaptions = {}; platformSuggestions = {}; platformPickedIdx = {};
+  platformCaptions = {}; platformTitles = {}; platformSuggestions = {}; platformPickedIdx = {};
   platformStatus = {}; platformPostUrl = {};
   platformPostedAt = {}; platformPostedCaption = {};
   var cap = document.querySelector("#caption");
@@ -208,6 +288,17 @@ function escHtml(s) {
     return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c];
   });
 }
+
+// A suggestion is a plain string for every platform except Pinterest, whose
+// suggestions are { title, description } objects. These three helpers read
+// either shape so the render/pick code stays branch-light (legacy sessions with
+// string Pinterest suggestions degrade to description-only, as before).
+function suggestLabel(s) {
+  if (s && typeof s === "object") return (s.title ? s.title + " — " : "") + (s.description || "");
+  return String(s == null ? "" : s);
+}
+function suggestDesc(s) { return (s && typeof s === "object") ? String(s.description || "") : String(s == null ? "" : s); }
+function suggestTitle(s) { return (s && typeof s === "object") ? String(s.title || "") : ""; }
 
 // Resolve the caption a platform will actually post: its own edited/adapted
 // caption if present, else the shared base caption.
@@ -257,10 +348,11 @@ function renderPlatforms() {
     var pickedIdx = platformPickedIdx[p.name];
     var suggestionsHtml = suggestions.length
       ? '<div class="psuggestions">' + suggestions.map(function (s, i) {
-          return '<button class="suggestchip' + (i === pickedIdx ? ' picked' : '') + '" type="button" data-idx="' + i + '">' + escHtml(s) + '</button>';
+          return '<button class="suggestchip' + (i === pickedIdx ? ' picked' : '') + '" type="button" data-idx="' + i + '">' + escHtml(suggestLabel(s)) + '</button>';
         }).join('') + '</div>'
       : '';
-    var openLabel = INTENT_URLS[p.name] ? 'compose' : (p.note ? 'app' : 'upload');
+    var openLabel = (IS_MOBILE && SCHEME_URLS[p.name]) ? 'app' : (INTENT_URLS[p.name] ? 'compose' : (p.note ? 'app' : 'upload'));
+    var isPin = p.name === "Pinterest";
     var hasPreset = !!(presets[p.name] && presets[p.name].trim());
     card.innerHTML =
       '<div class="pname"><span class="picon">' + p.icon + '</span>' + p.name +
@@ -273,11 +365,13 @@ function renderPlatforms() {
       '<button class="btn ghost presetsave" type="button">Save</button>' +
       '</div>' +
       suggestionsHtml +
-      '<textarea class="pcaption" placeholder="Same as base caption until you Adapt, or type your own">' + escHtml(platformCaptions[p.name] || "") + '</textarea>' +
+      (isPin ? '<input class="ptitle" maxlength="100" placeholder="Pin title (up to 100 chars)" value="' + escHtml(platformTitles[p.name] || "") + '">' : '') +
+      '<textarea class="pcaption" placeholder="' + (isPin ? 'Pin description' : 'Same as base caption until you Adapt, or type your own') + '">' + escHtml(platformCaptions[p.name] || "") + '</textarea>' +
       '<div class="pmeta"><span class="valcount" data-level="ok"></span><span class="valwarn hidden"></span></div>' +
       '<div class="prow">' +
       '<button class="btn primary copyopenbtn" type="button">Copy + open ' + openLabel + ' →</button>' +
-      '<button class="btn ghost copybtn" type="button">Copy only</button>' +
+      (isPin ? '<button class="btn ghost copytitlebtn" type="button">Copy title</button>' : '') +
+      '<button class="btn ghost copybtn" type="button">' + (isPin ? 'Copy description' : 'Copy only') + '</button>' +
       '</div>' +
       (hasPreset ? '<div class="prow presetrow"><button class="btn ghost applypreset" type="button">Apply preset</button></div>' : '') +
       '<div class="prow statusrow">' +
@@ -289,6 +383,13 @@ function renderPlatforms() {
 
     var pcaption = card.querySelector(".pcaption");
     var posturl = card.querySelector(".posturl");
+    var ptitle = card.querySelector(".ptitle"); // Pinterest only, else null
+    if (ptitle) {
+      ptitle.addEventListener("input", function () {
+        platformTitles[p.name] = ptitle.value;
+        saveSession();
+      });
+    }
 
     // Preset editor: the ✎ toggles an inline template field (classList only,
     // no re-render, so it never blurs a caption mid-edit).
@@ -331,8 +432,9 @@ function renderPlatforms() {
       chip.addEventListener("click", function () {
         var idx = parseInt(chip.dataset.idx, 10);
         platformPickedIdx[p.name] = idx;
-        platformCaptions[p.name] = suggestions[idx];
-        pcaption.value = suggestions[idx];
+        platformCaptions[p.name] = suggestDesc(suggestions[idx]);
+        pcaption.value = platformCaptions[p.name];
+        if (ptitle) { platformTitles[p.name] = suggestTitle(suggestions[idx]).slice(0, 100); ptitle.value = platformTitles[p.name]; }
         card.querySelectorAll(".suggestchip").forEach(function (c) { c.classList.remove("picked"); });
         chip.classList.add("picked");
         // Setting .value in JS doesn't fire "input", so refresh the char-count
@@ -353,7 +455,12 @@ function renderPlatforms() {
       }).catch(function () {
         toast("Couldn't copy — caption's still in the box");
       });
-      window.open(openUrlFor(p, text), "_blank", "noopener");
+      // Launch synchronously inside the click gesture (don't defer into the
+      // clipboard .then, or iOS may block the scheme navigation for losing the
+      // user-activation). Scheme → same-page handoff to the app; web → new tab.
+      var target = navTarget(p, text);
+      if (target.mode === "scheme") window.location.href = target.url;
+      else window.open(target.url, "_blank", "noopener");
       bumpStatus(p.name, "opened");
       refreshStatus();
       saveSession();
@@ -371,6 +478,19 @@ function renderPlatforms() {
         toast("Couldn't copy — select and copy manually");
       });
     });
+
+    var copyTitleBtn = card.querySelector(".copytitlebtn"); // Pinterest only
+    if (copyTitleBtn) {
+      copyTitleBtn.addEventListener("click", function () {
+        var t = (ptitle ? ptitle.value : platformTitles[p.name]) || "";
+        if (!t.trim()) { toast("Write a Pin title first"); return; }
+        copyText(t).then(function () {
+          toast("Pin title copied — paste it into the title field");
+        }).catch(function () {
+          toast("Couldn't copy — select and copy manually");
+        });
+      });
+    }
 
     card.querySelector(".markposted").addEventListener("click", function () {
       var nowPosted = statusOf(p.name) !== "posted";
@@ -695,8 +815,12 @@ async function adaptCaptionsForPlatforms(baseCaption, onPhase) {
   var prompt = "You write short-form video captions. Given this base caption, rewrite it tailored " +
     "to each platform's real conventions (typical length, hashtag style, tone) while keeping the " +
     "core message intact. Platforms: " + names.join(", ") + ".\n\nBase caption:\n" + baseCaption +
-    "\n\nRespond with ONLY a JSON object whose keys are exactly the platform names above and whose " +
-    "values are the tailored caption strings. No markdown, no explanation, no extra keys.";
+    lengthGuidanceBlock(getCaptionLengthPref()) +
+    "\n\nFor \"Pinterest\" only, the value must be an object with keys \"title\" (a punchy, searchable Pin " +
+    "title, hard cap 100 chars) and \"description\" (the Pin description, hard cap 500 chars) instead of a " +
+    "plain string.\n\nRespond with ONLY a JSON object whose keys are exactly the platform names above and " +
+    "whose values are the tailored caption strings (for \"Pinterest\", the object described). No markdown, " +
+    "no explanation, no extra keys.";
 
   var text = await generateText(getProviderConfig(), { prompt: prompt, jsonMode: true, temperature: 0.4, onPhase: onPhase });
   return parseCaptionJSON(text);
@@ -713,8 +837,12 @@ $("#adaptBtn").addEventListener("click", async function () {
   try {
     var adapted = await adaptCaptionsForPlatforms(base, function (phase) { label.textContent = phase + "…"; });
     PLATFORMS.forEach(function (p) {
-      if (typeof adapted[p.name] === "string" && adapted[p.name].trim()) {
-        platformCaptions[p.name] = adapted[p.name].trim();
+      var v = adapted[p.name];
+      if (p.name === "Pinterest" && v && typeof v === "object") {
+        if (v.description != null) platformCaptions[p.name] = String(v.description).trim();
+        if (v.title != null) platformTitles[p.name] = String(v.title).trim().slice(0, 100);
+      } else if (typeof v === "string" && v.trim()) {
+        platformCaptions[p.name] = v.trim();
       }
     });
     renderPlatforms();
@@ -763,9 +891,12 @@ var TRANSCRIBE_FOR_CAPTIONS_PROMPT = "Transcribe the spoken audio in this clip p
 function captionSuggestPrompt(names, count) {
   return "Propose exactly " + count + " distinct caption option" + (count > 1 ? "s" : "") + " for each of " +
     "these platforms, tailored to each platform's real conventions (typical length, hashtag style, tone): " +
-    names.join(", ") + ".\n\nRespond with ONLY a JSON object whose keys are exactly the platform names " +
-    "above and whose values are arrays of exactly " + count + " caption string" + (count > 1 ? "s" : "") +
-    " each, ordered best-first. No markdown, no explanation, no extra keys.";
+    names.join(", ") + "." + lengthGuidanceBlock(getCaptionLengthPref()) +
+    "\n\nFor \"Pinterest\" only, each option must be an object with keys \"title\" (a punchy, searchable Pin " +
+    "title, hard cap 100 chars) and \"description\" (hard cap 500 chars) instead of a plain string.\n\n" +
+    "Respond with ONLY a JSON object whose keys are exactly the platform names above and whose values are " +
+    "arrays of exactly " + count + " option" + (count > 1 ? "s" : "") + " each (for Pinterest, an array of " +
+    "those objects), ordered best-first. No markdown, no explanation, no extra keys.";
 }
 
 function parseCaptionJSON(text) {
@@ -909,7 +1040,12 @@ $("#suggestBtn").addEventListener("click", async function () {
     PLATFORMS.forEach(function (p) {
       var arr = results[p.name];
       if (Array.isArray(arr) && arr.length) {
-        platformSuggestions[p.name] = arr.slice(0, count).map(String);
+        platformSuggestions[p.name] = arr.slice(0, count).map(function (s) {
+          if (p.name === "Pinterest" && s && typeof s === "object") {
+            return { title: String(s.title || "").slice(0, 100), description: String(s.description || "") };
+          }
+          return String(s);
+        });
         delete platformPickedIdx[p.name];
       }
     });
@@ -942,6 +1078,19 @@ $("#suggestBtn").addEventListener("click", async function () {
   if (jump) jump.addEventListener("click", function () {
     var panel = $("#uploadPanel");
     if (panel) panel.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+})();
+
+// Caption-length preference (Short/Medium/Long): reflect the saved choice into
+// the radios on load, and persist any change. Feeds both Adapt and Suggest.
+(function () {
+  var pref = getCaptionLengthPref();
+  var checked = document.querySelector('input[name="captionLength"][value="' + pref + '"]');
+  if (checked) checked.checked = true;
+  document.querySelectorAll('input[name="captionLength"]').forEach(function (r) {
+    r.addEventListener("change", function () {
+      if (r.checked) { try { localStorage.setItem(LS_CAPTION_LEN, r.value); } catch (e) {} }
+    });
   });
 })();
 
