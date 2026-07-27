@@ -82,6 +82,69 @@ function getCaptionLengthPref() {
   try { v = localStorage.getItem(LS_CAPTION_LEN) || ""; } catch (e) {}
   return (v === "short" || v === "long") ? v : "medium";
 }
+
+// === AI ops UX: learned durations, thinking preference, run wrapper ===
+// Durations: one key, op-keyed, last 5 runs each — powers "typically ~Ns".
+var LS_AI_MS = "blast_ai_ms_v1";
+function recordAiMs(op, ms) {
+  try {
+    var all = JSON.parse(localStorage.getItem(LS_AI_MS) || "{}"); if (!all || typeof all !== "object") all = {};
+    var a = Array.isArray(all[op]) ? all[op] : [];
+    a.push(ms); while (a.length > 5) a.shift();
+    all[op] = a;
+    localStorage.setItem(LS_AI_MS, JSON.stringify(all));
+  } catch (e) {}
+}
+function typicalAiMs(op) {
+  try {
+    var a = (JSON.parse(localStorage.getItem(LS_AI_MS) || "{}") || {})[op];
+    if (!Array.isArray(a) || !a.length) return 0;
+    var s = 0; for (var i = 0; i < a.length; i++) s += a[i]; return Math.round(s / a.length);
+  } catch (e) { return 0; }
+}
+// Thinking preference ("on" = best quality, "off" = fastest). Own key (the
+// Settings save handler rewrites blast_settings_v1 wholesale) + the StackData
+// shared store so RECALL/HOOKLAB/BLAST follow one switch on this device.
+// Shared value wins on read; default is ON.
+var LS_THINKING = "blast_thinking_v1";
+function getThinkingPref() {
+  var v = "";
+  try { v = (window.StackData && window.StackData.readSharedKeys().aiThinking) || localStorage.getItem(LS_THINKING) || ""; } catch (e) {}
+  return v === "off" ? "off" : "on";
+}
+function setThinkingPref(v) {
+  try { localStorage.setItem(LS_THINKING, v); } catch (e) {}
+  if (window.StackData) window.StackData.writeSharedKeys({ aiThinking: v });
+}
+// Run one AI operation with an elapsed ticker + learned ETA + persistent error
+// line. fn(onPhase) returns a promise. Rethrows so callers keep their existing
+// toast/openSettings catch and button-restoring finally.
+async function aiRun(op, labelEl, errEl, baseText, fn) {
+  var typ = typicalAiMs(op);
+  var eta = typ ? " (typically ~" + Math.round(typ / 1000) + "s)" : "";
+  var start = Date.now(), phase = "";
+  if (errEl) { errEl.textContent = ""; errEl.classList.remove("on"); }
+  function tick() {
+    labelEl.textContent = (phase || baseText) + "… " + Math.round((Date.now() - start) / 1000) + "s" + eta;
+  }
+  tick();
+  var timer = setInterval(tick, 1000);
+  try {
+    var out = await fn(function (msg) { phase = msg || ""; tick(); });
+    recordAiMs(op, Date.now() - start);
+    return out;
+  } catch (err) {
+    if (errEl) {
+      errEl.textContent = baseText + " failed after " + Math.round((Date.now() - start) / 1000) + "s — " +
+        (err && err.message || "unknown error");
+      errEl.classList.add("on");
+    }
+    throw err;
+  } finally {
+    clearInterval(timer);
+    labelEl.textContent = "";
+  }
+}
 // The length instruction block appended to both AI prompts. Feeds the model the
 // hard caps (which it never otherwise sees) plus a target range per platform,
 // and asks IG/FB/LinkedIn for genuinely long, story-style captions on "long".
@@ -689,6 +752,10 @@ function openSettings() {
   providerGemini.checked = provider === "gemini";
   providerOpenrouter.checked = provider === "openrouter";
   showProviderFields(provider);
+  // Re-reflect the thinking pref — another stack app may have changed the
+  // shared value since load.
+  var think = document.querySelector('input[name="aiThinking"][value="' + getThinkingPref() + '"]');
+  if (think) think.checked = true;
 
   gemkey.value = s.geminiKey || "";
   keystatus.textContent = keyStatusText(s.geminiKey);
@@ -822,7 +889,7 @@ async function adaptCaptionsForPlatforms(baseCaption, onPhase) {
     "whose values are the tailored caption strings (for \"Pinterest\", the object described). No markdown, " +
     "no explanation, no extra keys.";
 
-  var text = await generateText(getProviderConfig(), { prompt: prompt, jsonMode: true, temperature: 0.4, onPhase: onPhase });
+  var text = await generateText(getProviderConfig(), { prompt: prompt, jsonMode: true, temperature: 0.4, thinking: getThinkingPref() === "on", onPhase: onPhase });
   return parseCaptionJSON(text);
 }
 
@@ -833,9 +900,10 @@ $("#adaptBtn").addEventListener("click", async function () {
   var label = $("#adaptLabel");
   btn.disabled = true;
   btn.textContent = "Adapting…";
-  label.textContent = getProviderConfig().provider === "openrouter" ? "Calling OpenRouter…" : "Calling Gemini…";
   try {
-    var adapted = await adaptCaptionsForPlatforms(base, function (phase) { label.textContent = phase + "…"; });
+    var adapted = await aiRun("adapt", label, $("#adaptError"), "Adapting", function (onPhase) {
+      return adaptCaptionsForPlatforms(base, onPhase);
+    });
     PLATFORMS.forEach(function (p) {
       var v = adapted[p.name];
       if (p.name === "Pinterest" && v && typeof v === "object") {
@@ -847,11 +915,9 @@ $("#adaptBtn").addEventListener("click", async function () {
     });
     renderPlatforms();
     saveSession();
-    label.textContent = "";
     toast("Captions adapted for every platform");
   } catch (err) {
     console.error(err);
-    label.textContent = "";
     var msg = err && err.message ? err.message : "unknown error";
     toast("Couldn't adapt captions: " + msg, 6000);
     if (/no (gemini|openrouter) api key/i.test(msg)) openSettings();
@@ -984,7 +1050,7 @@ async function suggestCaptionsFromText(transcript, count, evidenceBlock, context
   var names = PLATFORMS.map(function (p) { return p.name; });
   var textPrompt = "Here is a transcript of a video clip:\n\n" + transcript + (contextBlk || "") + "\n\n" +
     captionSuggestPrompt(names, count) + (evidenceBlock || "");
-  var text = await generateText(config, { prompt: textPrompt, jsonMode: true, temperature: 0.5, onPhase: onPhase });
+  var text = await generateText(config, { prompt: textPrompt, jsonMode: true, temperature: 0.5, thinking: getThinkingPref() === "on", onPhase: onPhase });
   return parseCaptionJSON(text);
 }
 
@@ -997,13 +1063,14 @@ async function suggestCaptionsFromVideo(file, mode, count, evidenceBlock, contex
       throw new Error("Video analysis needs Gemini — switch provider in Settings, or use transcript mode.");
     }
     var visionPrompt = "Watch this video clip, then: " + captionSuggestPrompt(names, count) + (contextBlk || "") + (evidenceBlock || "");
-    var text = await generateFromMedia(config, { file: file, prompt: visionPrompt, jsonMode: true, mediaKind: "video", onPhase: onPhase });
+    var text = await generateFromMedia(config, { file: file, prompt: visionPrompt, jsonMode: true, mediaKind: "video", thinking: getThinkingPref() === "on", onPhase: onPhase });
     return parseCaptionJSON(text);
   }
 
   onPhase("Transcribing");
   var mediaKind = (file.type || "").indexOf("video/") === 0 ? "video" : "audio";
-  var transcript = await generateFromMedia(config, { file: file, prompt: TRANSCRIBE_FOR_CAPTIONS_PROMPT, mediaKind: mediaKind, onPhase: onPhase });
+  // Pure transcription — thinking is wasted tokens here; never enable it.
+  var transcript = await generateFromMedia(config, { file: file, prompt: TRANSCRIBE_FOR_CAPTIONS_PROMPT, mediaKind: mediaKind, thinking: false, onPhase: onPhase });
   onPhase("Writing captions");
   return suggestCaptionsFromText(transcript, count, evidenceBlock, contextBlk, onPhase);
 }
@@ -1029,13 +1096,17 @@ $("#suggestBtn").addEventListener("click", async function () {
   btn.textContent = "Analyzing…";
   try {
     var results;
-    var onPhase = function (phase) { label.textContent = phase + "…"; };
     if (transcriptText) {
-      label.textContent = "Writing captions…";
-      results = await suggestCaptionsFromText(transcriptText, count, evidenceBlock, contextBlk, onPhase);
+      results = await aiRun("suggest-text", label, $("#suggestError"), "Writing captions", function (onPhase) {
+        return suggestCaptionsFromText(transcriptText, count, evidenceBlock, contextBlk, onPhase);
+      });
     } else {
       var mode = $("#modeVision").checked ? "vision" : "transcript";
-      results = await suggestCaptionsFromVideo(pendingFile, mode, count, evidenceBlock, contextBlk, onPhase);
+      // The transcribe route is two AI calls timed as ONE op — its total is
+      // what the user actually waits for.
+      results = await aiRun(mode === "vision" ? "suggest-vision" : "suggest-transcribe", label, $("#suggestError"), "Analyzing", function (onPhase) {
+        return suggestCaptionsFromVideo(pendingFile, mode, count, evidenceBlock, contextBlk, onPhase);
+      });
     }
     PLATFORMS.forEach(function (p) {
       var arr = results[p.name];
@@ -1051,12 +1122,10 @@ $("#suggestBtn").addEventListener("click", async function () {
     });
     renderPlatforms();
     saveSession();
-    label.textContent = "";
     var extra = ev.winners.length ? " (leaning on " + ev.winners.length + " HOOKLAB winner" + (ev.winners.length > 1 ? "s" : "") + ")" : "";
     toast("Caption suggestions ready — pick one per platform" + extra);
   } catch (err) {
     console.error(err);
-    label.textContent = "";
     var msg = err && err.message ? err.message : "unknown error";
     toast("Couldn't suggest captions: " + msg, 6000);
     if (/no (gemini|openrouter) api key/i.test(msg)) openSettings();
@@ -1091,6 +1160,18 @@ $("#suggestBtn").addEventListener("click", async function () {
     r.addEventListener("change", function () {
       if (r.checked) { try { localStorage.setItem(LS_CAPTION_LEN, r.value); } catch (e) {} }
     });
+  });
+})();
+
+// Thinking preference: reflect on load, persist on change (NOT via the save
+// button — #keysave rewrites blast_settings_v1 wholesale). Also mirrored into
+// the StackData shared store so the other apps follow.
+(function () {
+  var pref = getThinkingPref();
+  var checked = document.querySelector('input[name="aiThinking"][value="' + pref + '"]');
+  if (checked) checked.checked = true;
+  document.querySelectorAll('input[name="aiThinking"]').forEach(function (r) {
+    r.addEventListener("change", function () { if (r.checked) setThinkingPref(r.value); });
   });
 })();
 
