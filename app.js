@@ -130,7 +130,8 @@ async function aiRun(op, labelEl, errEl, baseText, fn) {
       Math.round((Date.now() - start) / 1000) + "s" + eta;
   }
   tick();
-  if (activeModelIsSlow()) toast(model + " is a slow reasoning model — switch to a fast one in Settings if this drags", 6000);
+  if (activeModelIsRouter()) toast("The free model router can queue for minutes — a paid fast model in Settings is pennies per batch", 6000);
+  else if (activeModelIsSlow()) toast(model + " is a slow reasoning model — switch to a fast one in Settings if this drags", 6000);
   var timer = setInterval(tick, 1000);
   try {
     var out = await fn(function (msg) { phase = msg || ""; tick(); });
@@ -198,6 +199,15 @@ function activeModelLabel() {
 // Reasoning/heavyweight tiers: correct answers, minutes-long waits on a
 // multi-platform caption job.
 var SLOW_MODEL_RE = /opus|o1|o3(?!-mini)|gpt-4-turbo|deepseek-r1|\br1\b|qwq|qwen-?3|glm-4\.[5-9]|kimi|minimax|magistral|sonar-reasoning|grok-[3-9]|reason|think|405b/i;
+// The free/auto routers hand each request to whatever model has spare
+// capacity, behind everyone else's free usage — so runs queue for minutes or
+// time out. Slow for a completely different reason than a reasoning model, so
+// it gets its own message.
+var ROUTER_MODEL_RE = /openrouter\/(free|auto)/i;
+function activeModelIsRouter() {
+  var cfg = getProviderConfig();
+  return cfg.provider === "openrouter" && ROUTER_MODEL_RE.test(String(cfg.openrouterModel || ""));
+}
 function activeModelIsSlow() {
   var cfg = getProviderConfig();
   return cfg.provider === "openrouter" && SLOW_MODEL_RE.test(String(cfg.openrouterModel || ""));
@@ -1111,8 +1121,12 @@ function openSettings() {
 function refreshSlowModelHint() {
   var el = $("#slowModelHint");
   if (!el) return;
-  var slow = SLOW_MODEL_RE.test((ormodel && ormodel.value) || "");
-  el.textContent = slow
+  var val = (ormodel && ormodel.value) || "";
+  var router = ROUTER_MODEL_RE.test(val);
+  var slow = router || SLOW_MODEL_RE.test(val);
+  el.textContent = router
+    ? "The free router hands your request to whatever free model has capacity, behind everyone else's free usage — runs regularly queue for minutes or time out. openai/gpt-4o-mini costs about a cent per full batch and answers in seconds."
+    : slow
     ? "This is a slow reasoning model — captions can take several minutes. Pick a flash/mini/haiku model for everyday runs."
     : "";
   el.classList.toggle("on", slow);
@@ -1312,6 +1326,34 @@ async function generateForClip(clip, names, seed, count, onPhase) {
   return { partial: !!adapted.__partial };
 }
 
+
+// When OpenRouter can't deliver — timed out, spent the whole reply thinking,
+// still refused JSON after the retry, or rate-limited — and a Gemini key is
+// configured, rerun the same job on Gemini rather than failing. The free
+// router in particular can queue for minutes; a rescued run beats a correct
+// error message when you're mid-batch.
+function isProviderFailure(err) {
+  var msg = (err && err.message) || "";
+  return !!(err && (err.spentThinking || err.nonJson)) ||
+    /timed out after/i.test(msg) || /rate limited/i.test(msg) ||
+    /overloaded/i.test(msg) || /no longer available on OpenRouter/i.test(msg);
+}
+async function withGeminiFallback(onPhase, run) {
+  var cfg = getProviderConfig();
+  try {
+    return await run(cfg);
+  } catch (err) {
+    if (cfg.provider !== "openrouter" || !cfg.geminiKey || !isProviderFailure(err)) throw err;
+    if (onPhase) onPhase("OpenRouter didn't answer — trying Gemini");
+    var out = await run({
+      provider: "gemini", geminiKey: cfg.geminiKey,
+      openrouterKey: cfg.openrouterKey, openrouterModel: cfg.openrouterModel,
+    });
+    toast("OpenRouter didn't answer — these captions came from your Gemini key", 6000);
+    return out;
+  }
+}
+
 // A model that replied with prose (or spent its budget reasoning) usually
 // complies when told bluntly. Retry the SAME prompt once with a hard
 // instruction before surfacing the failure — cheaper than making the user
@@ -1342,8 +1384,9 @@ async function adaptCaptionsForPlatforms(baseCaption, onPhase, only) {
     "whose values are the tailored caption strings (for \"Pinterest\", the object described). No markdown, " +
     "no explanation, no extra keys.";
 
-  return withJsonRetry(onPhase, async function (nudge) {
-    var text = await generateText(getProviderConfig(), {
+  return withGeminiFallback(onPhase, function (cfg) {
+   return withJsonRetry(onPhase, async function (nudge) {
+    var text = await generateText(cfg, {
       prompt: prompt + nudge, jsonMode: true, temperature: 0.4,
       thinking: getThinkingPref() === "on",
       maxTokens: captionTokenBudget(names, 1, getCaptionLengthPref()),
@@ -1351,6 +1394,7 @@ async function adaptCaptionsForPlatforms(baseCaption, onPhase, only) {
       onPhase: onPhase,
     });
     return parseCaptionJSON(text);
+   });
   });
 }
 
@@ -1590,8 +1634,9 @@ async function suggestCaptionsForNames(seed, names, count, onPhase) {
   var config = getProviderConfig();
   var prompt = "Here is a short-form video clip's caption seed:\n\n" + seed + "\n\n" +
     captionSuggestPromptFor(names, count);
-  return withJsonRetry(onPhase, async function (nudge) {
-    var text = await generateText(config, {
+  return withGeminiFallback(onPhase, function (cfg) {
+   return withJsonRetry(onPhase, async function (nudge) {
+    var text = await generateText(cfg, {
       prompt: prompt + nudge, jsonMode: true, temperature: 0.5,
       thinking: getThinkingPref() === "on",
       maxTokens: captionTokenBudget(names, count, getCaptionLengthPref()),
@@ -1599,6 +1644,7 @@ async function suggestCaptionsForNames(seed, names, count, onPhase) {
       onPhase: onPhase,
     });
     return parseCaptionJSON(text);
+   });
   });
 }
 
@@ -1607,8 +1653,9 @@ async function suggestCaptionsFromText(transcript, count, evidenceBlock, context
   var names = PLATFORMS.map(function (p) { return p.name; });
   var textPrompt = "Here is a transcript of a video clip:\n\n" + transcript + (contextBlk || "") + "\n\n" +
     captionSuggestPrompt(names, count) + (evidenceBlock || "");
-  return withJsonRetry(onPhase, async function (nudge) {
-    var text = await generateText(config, {
+  return withGeminiFallback(onPhase, function (cfg) {
+   return withJsonRetry(onPhase, async function (nudge) {
+    var text = await generateText(cfg, {
       prompt: textPrompt + nudge, jsonMode: true, temperature: 0.5,
       thinking: getThinkingPref() === "on",
       maxTokens: captionTokenBudget(names, count, getCaptionLengthPref()),
@@ -1616,6 +1663,7 @@ async function suggestCaptionsFromText(transcript, count, evidenceBlock, context
       onPhase: onPhase,
     });
     return parseCaptionJSON(text);
+   });
   });
 }
 

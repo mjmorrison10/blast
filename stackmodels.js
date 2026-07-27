@@ -179,7 +179,10 @@
       g.label = name;
       arr.forEach(function (m) {
         var text = label(m);
-        if (m.id === "openrouter/free") text = "⚡ Auto: best free model";
+        // No lightning bolt — the free router queues behind everyone else's
+        // free usage and regularly takes minutes or times out. It should not
+        // look like the fast pick.
+        if (m.id === "openrouter/free") text = "Auto: best free model (slow — can queue for minutes)";
         g.appendChild(optionEl(m.id, text));
       });
       selectEl.appendChild(g);
