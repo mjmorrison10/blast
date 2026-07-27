@@ -25,29 +25,49 @@ function yield_() { return new Promise(function (r) { setTimeout(r, 0); }); }
 function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
 
 // === Per-attempt request deadlines ===
-// A hung fetch used to freeze the calling button forever (its catch/finally
+// A hung request used to freeze the calling button forever (its catch/finally
 // never ran). Aborting converts the hang into a normal catchable Error so the
 // UI always recovers.
+//
+// The deadline MUST span the body read, not just the headers. OpenRouter's
+// non-streaming endpoint answers with 200 headers almost immediately and then
+// holds the connection open for the whole generation, so a headers-only
+// timeout never fires: the await on res.json() just sits there, no error, no
+// console output, ticker climbing past 300s. Reading the body inside the same
+// abort window is what actually bounds the wait.
 var GEN_TIMEOUT_MS = 180000;          // generateContent / chat POST (thinking passes have long tails)
 var UPLOAD_START_TIMEOUT_MS = 30000;  // Files API resumable "start" (tiny JSON POST)
 var UPLOAD_TIMEOUT_MS = 900000;       // the bytes — a 2GB upload legitimately takes minutes
 var POLL_TIMEOUT_MS = 15000;          // each files.get poll (outer 2-min deadline unchanged)
+// Whole-operation ceiling across retries: 3 attempts at GEN_TIMEOUT_MS plus
+// backoff could legally reach ~9 minutes before surfacing anything.
+var OP_BUDGET_MS = 240000;
 
-function fetchWithTimeout(url, init, ms, what) {
+// Resolves to { res, bodyText } — the response plus its fully-read body, both
+// obtained under one deadline. Callers parse bodyText instead of awaiting
+// res.json() (which would be an unbounded second wait).
+async function fetchBodyWithTimeout(url, init, ms, what) {
   var ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
-  var t = ctrl ? setTimeout(function () { ctrl.abort(); }, ms) : null;
+  var t = ctrl ? setTimeout(function () { if (ctrl) ctrl.abort(); }, ms) : null;
   var opts = init || {};
   if (ctrl) opts.signal = ctrl.signal;
-  return fetch(url, opts).then(
-    function (res) { if (t) clearTimeout(t); return res; },
-    function (err) {
-      if (t) clearTimeout(t);
-      if (err && err.name === "AbortError") {
-        throw new Error((what || "Request") + " timed out — check your connection and try again");
-      }
-      throw err;
+  try {
+    var res = await fetch(url, opts);
+    var bodyText = await res.text();   // still inside the abort window
+    return { res: res, bodyText: bodyText };
+  } catch (err) {
+    if (err && err.name === "AbortError") {
+      throw new Error((what || "Request") + " timed out after " + Math.round(ms / 1000) +
+        "s — check your connection, or pick a faster model in Settings");
     }
-  );
+    throw err;
+  } finally {
+    if (t) clearTimeout(t);
+  }
+}
+
+function parseJsonBody(bodyText) {
+  try { return JSON.parse(bodyText); } catch (e) { return null; }
 }
 
 // === Rate-limit retry ===
@@ -76,17 +96,20 @@ function parseRetryDelayMs(bodyText) {
   return null;
 }
 
-// makeRequest: () => Promise<Response>. Retries on HTTP 429 with backoff, then
-// returns the final Response (ok or not) for the caller's own error handling.
-// onRetry(attempt, maxAttempts, waitMs) is optional/best-effort.
+// makeRequest: () => Promise<{res, bodyText}>. Retries on HTTP 429 with
+// backoff, then returns the final { res, bodyText } (ok or not) for the
+// caller's own error handling. onRetry(attempt, maxAttempts, waitMs) is
+// optional/best-effort. Stops retrying once OP_BUDGET_MS would be exceeded, so
+// the worst case is a bounded wait rather than attempts × timeout + backoff.
 async function fetchWithRetry(makeRequest, onRetry) {
+  var started = Date.now();
   for (var attempt = 1; ; attempt++) {
-    var res = await makeRequest();
-    if (!isRetryable(res.status) || attempt >= MAX_ATTEMPTS) return res;
-    var serverDelay = null;
-    try { serverDelay = parseRetryDelayMs(await res.clone().text()); } catch (e) {}
+    var out = await makeRequest();
+    if (!isRetryable(out.res.status) || attempt >= MAX_ATTEMPTS) return out;
+    var serverDelay = parseRetryDelayMs(out.bodyText);
     var wait = serverDelay != null ? serverDelay : (RETRY_BACKOFF_MS[attempt - 1] || 12000);
     wait = Math.min(wait, RETRY_DELAY_CAP_MS);
+    if (Date.now() - started + wait > OP_BUDGET_MS) return out; // out of budget — surface the error now
     if (onRetry) { try { onRetry(attempt, MAX_ATTEMPTS, wait); } catch (e) {} }
     await sleep(wait);
   }
@@ -124,8 +147,8 @@ function guessMime(name) {
 
 // === Gemini Files API (resumable upload, for files > GEMINI_INLINE_MAX_BYTES) ===
 async function uploadToGeminiFilesAPI(file, mime, apiKey, onPhase) {
-  var startRes = await fetchWithRetry(function () {
-    return fetchWithTimeout(GEMINI_FILES_UPLOAD + "?key=" + encodeURIComponent(apiKey), {
+  var startOut = await fetchWithRetry(function () {
+    return fetchBodyWithTimeout(GEMINI_FILES_UPLOAD + "?key=" + encodeURIComponent(apiKey), {
       method: "POST",
       headers: {
         "X-Goog-Upload-Protocol": "resumable",
@@ -137,6 +160,7 @@ async function uploadToGeminiFilesAPI(file, mime, apiKey, onPhase) {
       body: JSON.stringify({ file: { display_name: file.name } }),
     }, UPLOAD_START_TIMEOUT_MS, "Upload");
   }, retryReporter(onPhase));
+  var startRes = startOut.res;
   if (!startRes.ok) {
     if (startRes.status === 401 || startRes.status === 403) throw new Error("Gemini API key rejected — open Settings");
     if (startRes.status === 429) throw new Error("Rate limited — try again in a minute");
@@ -145,7 +169,7 @@ async function uploadToGeminiFilesAPI(file, mime, apiKey, onPhase) {
   }
   var uploadUrl = startRes.headers.get("X-Goog-Upload-URL");
   if (!uploadUrl) throw new Error("No upload URL returned by Gemini");
-  var uploadRes = await fetchWithTimeout(uploadUrl, {
+  var uploadOut = await fetchBodyWithTimeout(uploadUrl, {
     method: "POST",
     headers: {
       "X-Goog-Upload-Command": "upload, finalize",
@@ -154,9 +178,10 @@ async function uploadToGeminiFilesAPI(file, mime, apiKey, onPhase) {
     },
     body: file,
   }, UPLOAD_TIMEOUT_MS, "Upload");
-  if (!uploadRes.ok) throw new Error("File upload failed (HTTP " + uploadRes.status + ")");
-  var data = await uploadRes.json();
-  return data && data.file ? data.file : data;
+  if (!uploadOut.res.ok) throw new Error("File upload failed (HTTP " + uploadOut.res.status + ")");
+  var data = parseJsonBody(uploadOut.bodyText);
+  if (!data) throw new Error("Gemini returned an unreadable upload response");
+  return data.file ? data.file : data;
 }
 
 // The Files API returns a resource name that already looks like "files/abc-123";
@@ -173,9 +198,9 @@ async function waitForGeminiFileActive(fileName, apiKey) {
   var deadline = Date.now() + 120000;
   var url = geminiFileResourceUrl(fileName, apiKey);
   while (Date.now() < deadline) {
-    var r = await fetchWithTimeout(url, null, POLL_TIMEOUT_MS, "File status check");
-    if (!r.ok) throw new Error("File status check failed (HTTP " + r.status + ")");
-    var f = await r.json();
+    var r = await fetchBodyWithTimeout(url, null, POLL_TIMEOUT_MS, "File status check");
+    if (!r.res.ok) throw new Error("File status check failed (HTTP " + r.res.status + ")");
+    var f = parseJsonBody(r.bodyText) || {};
     if (f.state === "ACTIVE") return f;
     if (f.state === "FAILED") throw new Error("Gemini could not process this file");
     await new Promise(function (resolve) { setTimeout(resolve, 2000); });
@@ -186,14 +211,13 @@ async function waitForGeminiFileActive(fileName, apiKey) {
 // Best-effort cleanup — files auto-expire after 48h anyway.
 async function deleteGeminiFile(fileName, apiKey) {
   try {
-    await fetch(geminiFileResourceUrl(fileName, apiKey), { method: "DELETE" });
+    await fetchBodyWithTimeout(geminiFileResourceUrl(fileName, apiKey), { method: "DELETE" }, POLL_TIMEOUT_MS, "Cleanup");
   } catch (e) { /* silent */ }
 }
 
-async function extractGeminiText(res) {
+function extractGeminiText(res, bodyText, partialOnTruncate) {
   if (!res.ok) {
-    var body = "";
-    try { body = await res.text(); } catch (e) {}
+    var body = bodyText || "";
     if (res.status === 400) throw new Error("Gemini rejected the request — check key + file type");
     if (res.status === 401 || res.status === 403) throw new Error("Gemini API key rejected — open Settings");
     if (res.status === 413 || /too large/i.test(body)) throw new Error("File too large for Gemini");
@@ -201,13 +225,14 @@ async function extractGeminiText(res) {
     if (res.status === 503 || res.status === 500) throw new Error("Gemini is overloaded right now (still busy after a few retries) — try again in a moment, or switch to OpenRouter in Settings.");
     throw new Error("Gemini error " + res.status + ": " + body.slice(0, 150));
   }
-  var json = await res.json();
+  var json = parseJsonBody(bodyText);
   var candidate = json && json.candidates && json.candidates[0];
   var text = candidate && candidate.content && candidate.content.parts &&
              candidate.content.parts[0] && candidate.content.parts[0].text;
   if (!text) throw new Error("Empty response from Gemini");
-  var finishReason = candidate && candidate.finishReason;
-  if (finishReason === "MAX_TOKENS") {
+  // With partialOnTruncate the caller salvages the complete items out of the
+  // cut-off text rather than losing an otherwise good response.
+  if (candidate.finishReason === "MAX_TOKENS" && !partialOnTruncate) {
     throw new Error("Response hit the token limit and was truncated. Try shorter input.");
   }
   return text;
@@ -221,14 +246,14 @@ async function geminiGenerateText(apiKey, opts) {
   else if (!opts.thinking) generationConfig.thinkingConfig = { thinkingBudget: 0 };
   if (opts.jsonMode) generationConfig.responseMimeType = "application/json";
   if (opts.maxTokens) generationConfig.maxOutputTokens = opts.maxTokens;
-  var res = await fetchWithRetry(function () {
-    return fetchWithTimeout(GEMINI_TEXT_ENDPOINT + "?key=" + encodeURIComponent(apiKey), {
+  var out = await fetchWithRetry(function () {
+    return fetchBodyWithTimeout(GEMINI_TEXT_ENDPOINT + "?key=" + encodeURIComponent(apiKey), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: opts.prompt }] }], generationConfig: generationConfig }),
     }, GEN_TIMEOUT_MS, "AI request");
   }, retryReporter(opts.onPhase));
-  return extractGeminiText(res);
+  return extractGeminiText(out.res, out.bodyText, opts.partialOnTruncate);
 }
 
 async function geminiGenerateFromMedia(apiKey, opts) {
@@ -266,14 +291,14 @@ async function geminiGenerateFromMedia(apiKey, opts) {
     else if (!opts.thinking) generationConfig.thinkingConfig = { thinkingBudget: 0 };
     if (opts.jsonMode) generationConfig.responseMimeType = "application/json";
     if (opts.maxTokens) generationConfig.maxOutputTokens = opts.maxTokens;
-    var res = await fetchWithRetry(function () {
-      return fetchWithTimeout(GEMINI_TEXT_ENDPOINT + "?key=" + encodeURIComponent(apiKey), {
+    var out = await fetchWithRetry(function () {
+      return fetchBodyWithTimeout(GEMINI_TEXT_ENDPOINT + "?key=" + encodeURIComponent(apiKey), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ contents: [{ parts: [{ text: opts.prompt }, mediaPart] }], generationConfig: generationConfig }),
       }, GEN_TIMEOUT_MS, "AI request");
     }, retryReporter(onPhase));
-    return await extractGeminiText(res);
+    return extractGeminiText(out.res, out.bodyText, opts.partialOnTruncate);
   } finally {
     if (uploadedFileName) await deleteGeminiFile(uploadedFileName, apiKey);
   }
@@ -292,9 +317,9 @@ function openrouterHeaders(apiKey) {
   };
 }
 
-async function extractOpenrouterText(res) {
+function extractOpenrouterText(res, bodyText, partialOnTruncate) {
   if (!res.ok) {
-    var body = await res.text().catch(function () { return ""; });
+    var body = bodyText || "";
     if (res.status === 401) throw new Error("OpenRouter API key rejected — open Settings");
     if (res.status === 429) throw new Error("Rate limited — try again in a minute");
     if (res.status === 404 || /no endpoints found/i.test(body)) {
@@ -302,11 +327,11 @@ async function extractOpenrouterText(res) {
     }
     throw new Error("OpenRouter error " + res.status + ": " + body.slice(0, 150));
   }
-  var json = await res.json();
+  var json = parseJsonBody(bodyText);
   var choice = json && json.choices && json.choices[0];
   var text = choice && choice.message && choice.message.content;
   if (!text) throw new Error("Empty response from OpenRouter");
-  if (choice.finish_reason === "length") {
+  if (choice.finish_reason === "length" && !partialOnTruncate) {
     throw new Error("Response hit the token limit and was truncated. Try shorter input.");
   }
   return text;
@@ -316,10 +341,10 @@ async function openrouterGenerateText(apiKey, model, opts) {
   var body = { model: model, messages: [{ role: "user", content: opts.prompt }], temperature: opts.temperature != null ? opts.temperature : 0.4 };
   if (opts.jsonMode) body.response_format = { type: "json_object" };
   if (opts.maxTokens) body.max_tokens = opts.maxTokens;
-  var res = await fetchWithRetry(function () {
-    return fetchWithTimeout(OPENROUTER_ENDPOINT, { method: "POST", headers: openrouterHeaders(apiKey), body: JSON.stringify(body) }, GEN_TIMEOUT_MS, "AI request");
+  var out = await fetchWithRetry(function () {
+    return fetchBodyWithTimeout(OPENROUTER_ENDPOINT, { method: "POST", headers: openrouterHeaders(apiKey), body: JSON.stringify(body) }, GEN_TIMEOUT_MS, "AI request");
   }, retryReporter(opts.onPhase));
-  return extractOpenrouterText(res);
+  return extractOpenrouterText(out.res, out.bodyText, opts.partialOnTruncate);
 }
 
 async function openrouterGenerateFromMedia(apiKey, model, opts) {
@@ -351,10 +376,10 @@ async function openrouterGenerateFromMedia(apiKey, model, opts) {
   var body = { model: model, messages: [{ role: "user", content: content }], temperature: 0.1 };
   if (opts.jsonMode) body.response_format = { type: "json_object" };
   if (opts.maxTokens) body.max_tokens = opts.maxTokens;
-  var res = await fetchWithRetry(function () {
-    return fetchWithTimeout(OPENROUTER_ENDPOINT, { method: "POST", headers: openrouterHeaders(apiKey), body: JSON.stringify(body) }, GEN_TIMEOUT_MS, "AI request");
+  var out = await fetchWithRetry(function () {
+    return fetchBodyWithTimeout(OPENROUTER_ENDPOINT, { method: "POST", headers: openrouterHeaders(apiKey), body: JSON.stringify(body) }, GEN_TIMEOUT_MS, "AI request");
   }, retryReporter(onPhase));
-  return extractOpenrouterText(res);
+  return extractOpenrouterText(out.res, out.bodyText, opts.partialOnTruncate);
 }
 
 // === Public API ===

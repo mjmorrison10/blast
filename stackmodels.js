@@ -193,13 +193,27 @@
     gc.appendChild(optionEl(CUSTOM, "Custom model id…"));
     selectEl.appendChild(gc);
 
-    // Select the current value; default to the top-ranked model otherwise.
+    // Select the current value; otherwise default to a FAST model, not the
+    // arena-top one. Ranked-first quietly handed new users a reasoning-tier
+    // model, which turns a 9-platform caption job into a multi-minute wait.
     if (current) selectEl.value = current;
     if (!selectEl.value) {
-      selectEl.value = ranked.length ? ranked[0].id : (models[0] && models[0].id) || CUSTOM;
+      selectEl.value = pickFastDefault(models, ranked);
       inputEl.value = selectEl.value === CUSTOM ? "" : selectEl.value;
     }
     syncInputVisibility(selectEl, inputEl);
+  }
+
+  // Prefer the known-good default, then any small/fast tier in the ranked list,
+  // then the ranked leader as a last resort.
+  var FAST_DEFAULT = "openai/gpt-4o-mini";
+  var FAST_RE = /flash|mini|haiku|lite|small|turbo-instruct/i;
+  function pickFastDefault(models, ranked) {
+    var all = models || [];
+    for (var i = 0; i < all.length; i++) if (all[i].id === FAST_DEFAULT) return FAST_DEFAULT;
+    var pool = (ranked && ranked.length ? ranked : all);
+    for (var j = 0; j < pool.length; j++) if (FAST_RE.test(pool[j].id)) return pool[j].id;
+    return (pool[0] && pool[0].id) || (all[0] && all[0].id) || CUSTOM;
   }
 
   function syncInputVisibility(selectEl, inputEl) {

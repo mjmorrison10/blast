@@ -123,11 +123,14 @@ async function aiRun(op, labelEl, errEl, baseText, fn) {
   var typ = typicalAiMs(op);
   var eta = typ ? " (typically ~" + Math.round(typ / 1000) + "s)" : "";
   var start = Date.now(), phase = "";
+  var model = activeModelLabel();
   if (errEl) { errEl.textContent = ""; errEl.classList.remove("on"); }
   function tick() {
-    labelEl.textContent = (phase || baseText) + "… " + Math.round((Date.now() - start) / 1000) + "s" + eta;
+    labelEl.textContent = (phase || baseText) + " · " + model + "… " +
+      Math.round((Date.now() - start) / 1000) + "s" + eta;
   }
   tick();
+  if (activeModelIsSlow()) toast(model + " is a slow reasoning model — switch to a fast one in Settings if this drags", 6000);
   var timer = setInterval(tick, 1000);
   try {
     var out = await fn(function (msg) { phase = msg || ""; tick(); });
@@ -148,9 +151,13 @@ async function aiRun(op, labelEl, errEl, baseText, fn) {
 // The length instruction block appended to both AI prompts. Feeds the model the
 // hard caps (which it never otherwise sees) plus a target range per platform,
 // and asks IG/FB/LinkedIn for genuinely long, story-style captions on "long".
-function lengthGuidanceBlock(pref) {
+// names (optional) restricts the block to the platforms actually being asked
+// for — a shorter prompt and a smaller answer when the user only posts a clip
+// to two or three places.
+function lengthGuidanceBlock(pref, names) {
   var story = { "Instagram Reels": 1, "Facebook Reels": 1, "LinkedIn": 1 };
-  var lines = PLATFORMS.map(function (p) {
+  var wanted = names && names.length ? PLATFORMS.filter(function (p) { return names.indexOf(p.name) >= 0; }) : PLATFORMS;
+  var lines = wanted.map(function (p) {
     var cap = (PLATFORM_RULES[p.name] || DEFAULT_RULES).limit;
     var tgt = (LENGTH_TARGETS[p.name] || {})[pref] || "";
     var line = "- " + p.name + ": hard cap " + cap + " chars (never exceed); aim for " + tgt + " chars.";
@@ -167,6 +174,33 @@ function lengthGuidanceBlock(pref) {
     " ABSOLUTE; land each caption inside its target range:\n" + lines.join("\n") +
     "\nFor \"Pinterest\" the value is an object (see below); its title has a hard cap of 100 chars and its" +
     " description follows the Pinterest target above.";
+}
+
+// An output ceiling sized to what was actually asked for. Without one, a slow
+// model can spend minutes emitting captions nobody capped — the single biggest
+// contributor to a run that "takes forever and then nothing".
+function captionTokenBudget(names, count, pref) {
+  var per = ({ short: 150, medium: 300, long: 800 })[pref] || 300;
+  var n = (names && names.length) || PLATFORMS.length;
+  return Math.min(16000, 400 + n * (count || 1) * per);
+}
+
+// Which model is actually running — shown in the progress label, because "it's
+// been 200 seconds" means something very different on a fast model than on a
+// reasoning-tier one, and the shared key store can change this from another app.
+function activeModelLabel() {
+  var cfg = getProviderConfig();
+  if (cfg.provider === "openrouter") {
+    return String(cfg.openrouterModel || "").split("/").pop() || "openrouter";
+  }
+  return "gemini-flash";
+}
+// Reasoning/heavyweight tiers: correct answers, minutes-long waits on a
+// multi-platform caption job.
+var SLOW_MODEL_RE = /opus|o1|o3(?!-mini)|gpt-4-turbo|deepseek-r1|reason|thinking|405b/i;
+function activeModelIsSlow() {
+  var cfg = getProviderConfig();
+  return cfg.provider === "openrouter" && SLOW_MODEL_RE.test(String(cfg.openrouterModel || ""));
 }
 
 // Compose-intent URLs — X and Threads accept a prefilled ?text= param, so
@@ -726,6 +760,13 @@ var settingscrim = $("#settingscrim"),
     geminiFields = $("#geminiFields"), openrouterFields = $("#openrouterFields"),
     providerGemini = $("#providerGemini"), providerOpenrouter = $("#providerOpenrouter");
 
+// Keep the slow-model warning honest as the user types or picks a model.
+(function () {
+  var sel = document.getElementById("ormodelselect");
+  if (ormodel) ormodel.addEventListener("input", function () { refreshSlowModelHint(); });
+  if (sel) sel.addEventListener("change", function () { setTimeout(refreshSlowModelHint, 0); });
+})();
+
 // Reads current settings into the { provider, geminiKey, openrouterKey,
 // openrouterModel } shape llm.js expects.
 function getProviderConfig() {
@@ -772,8 +813,21 @@ function openSettings() {
   if (window.StackModels) window.StackModels.populate(
     document.getElementById("ormodelselect"), ormodel, document.getElementById("ormodelrefresh"),
     function (ok) { toast(ok ? "Model list updated" : "Couldn't reach OpenRouter"); });
+  refreshSlowModelHint();
 
   setTimeout(function () { (provider === "gemini" ? gemkey : orkey).focus(); }, 40);
+}
+
+// Warn in Settings when the chosen model is a reasoning tier — those are the
+// runs that take minutes on a multi-platform caption job.
+function refreshSlowModelHint() {
+  var el = $("#slowModelHint");
+  if (!el) return;
+  var slow = SLOW_MODEL_RE.test((ormodel && ormodel.value) || "");
+  el.textContent = slow
+    ? "This is a slow reasoning model — captions can take several minutes. Pick a flash/mini/haiku model for everyday runs."
+    : "";
+  el.classList.toggle("on", slow);
 }
 function closeSettings() { settingscrim.classList.remove("open"); updateAnalysisModeAvailability(); }
 
@@ -877,19 +931,25 @@ document.addEventListener("keydown", function (e) {
 });
 
 // === Adapt caption per platform (provider-aware: Gemini or OpenRouter) ===
-async function adaptCaptionsForPlatforms(baseCaption, onPhase) {
-  var names = PLATFORMS.map(function (p) { return p.name; });
+async function adaptCaptionsForPlatforms(baseCaption, onPhase, only) {
+  var names = (only && only.length ? only : PLATFORMS.map(function (p) { return p.name; }));
   var prompt = "You write short-form video captions. Given this base caption, rewrite it tailored " +
     "to each platform's real conventions (typical length, hashtag style, tone) while keeping the " +
     "core message intact. Platforms: " + names.join(", ") + ".\n\nBase caption:\n" + baseCaption +
-    lengthGuidanceBlock(getCaptionLengthPref()) +
+    lengthGuidanceBlock(getCaptionLengthPref(), names) +
     "\n\nFor \"Pinterest\" only, the value must be an object with keys \"title\" (a punchy, searchable Pin " +
     "title, hard cap 100 chars) and \"description\" (the Pin description, hard cap 500 chars) instead of a " +
     "plain string.\n\nRespond with ONLY a JSON object whose keys are exactly the platform names above and " +
     "whose values are the tailored caption strings (for \"Pinterest\", the object described). No markdown, " +
     "no explanation, no extra keys.";
 
-  var text = await generateText(getProviderConfig(), { prompt: prompt, jsonMode: true, temperature: 0.4, thinking: getThinkingPref() === "on", onPhase: onPhase });
+  var text = await generateText(getProviderConfig(), {
+    prompt: prompt, jsonMode: true, temperature: 0.4,
+    thinking: getThinkingPref() === "on",
+    maxTokens: captionTokenBudget(names, 1, getCaptionLengthPref()),
+    partialOnTruncate: true,
+    onPhase: onPhase,
+  });
   return parseCaptionJSON(text);
 }
 
@@ -915,7 +975,12 @@ $("#adaptBtn").addEventListener("click", async function () {
     });
     renderPlatforms();
     saveSession();
-    toast("Captions adapted for every platform");
+    if (adapted.__partial) {
+      var got = PLATFORMS.filter(function (p) { return adapted[p.name] != null; }).length;
+      toast("Adapted " + got + " of " + PLATFORMS.length + " platforms (the response was cut off) — run again for the rest", 6000);
+    } else {
+      toast("Captions adapted for every platform");
+    }
   } catch (err) {
     console.error(err);
     var msg = err && err.message ? err.message : "unknown error";
@@ -965,6 +1030,67 @@ function captionSuggestPrompt(names, count) {
     "those objects), ordered best-first. No markdown, no explanation, no extra keys.";
 }
 
+// Pull whole "Platform": <value> pairs out of a response that was cut off
+// mid-generation. String/escape aware, so a brace inside a caption can't
+// confuse it, and each pair is JSON.parsed on its own — a garbled pair is
+// dropped rather than guessed at. Returns null when nothing survives.
+function salvageCaptionObject(text) {
+  var t = String(text == null ? "" : text);
+  var start = t.indexOf("{");
+  if (start < 0) return null;
+  function scanString(j) {
+    if (t[j] !== '"') return -1;
+    j++;
+    while (j < t.length) {
+      var c = t[j];
+      if (c === "\\") { j += 2; continue; }
+      if (c === '"') return j + 1;
+      j++;
+    }
+    return -1;                       // string ran off the end — truncated
+  }
+  function scanValue(j) {
+    var c = t[j];
+    if (c === '"') return scanString(j);
+    if (c === "{" || c === "[") {
+      var depth = 0;
+      while (j < t.length) {
+        var ch = t[j];
+        if (ch === '"') { var e = scanString(j); if (e < 0) return -1; j = e; continue; }
+        if (ch === "{" || ch === "[") depth++;
+        else if (ch === "}" || ch === "]") { depth--; if (depth === 0) return j + 1; }
+        j++;
+      }
+      return -1;                     // container never closed — truncated
+    }
+    var k = j;
+    while (k < t.length && ",}]".indexOf(t[k]) < 0) k++;
+    return k >= t.length ? -1 : k;   // primitive with no delimiter — truncated
+  }
+  var out = {}, found = 0, i = start + 1;
+  while (i < t.length) {
+    while (i < t.length && /\s/.test(t[i])) i++;
+    if (t[i] === "}" || i >= t.length) break;
+    if (t[i] === ",") { i++; continue; }
+    var kEnd = scanString(i);
+    if (kEnd < 0) break;
+    var rawKey = t.slice(i, kEnd);
+    var j = kEnd;
+    while (j < t.length && /\s/.test(t[j])) j++;
+    if (t[j] !== ":") break;
+    j++;
+    while (j < t.length && /\s/.test(t[j])) j++;
+    var vEnd = scanValue(j);
+    if (vEnd < 0) break;             // truncated tail — keep everything before it
+    try {
+      var pair = JSON.parse("{" + rawKey + ":" + t.slice(j, vEnd) + "}");
+      for (var key in pair) { out[key] = pair[key]; found++; }
+    } catch (e) { /* garbled pair — skip it */ }
+    i = vEnd;
+  }
+  return found ? out : null;
+}
+
 function parseCaptionJSON(text) {
   var t = String(text == null ? "" : text).trim();
   // Rescue the common near-miss: valid JSON wrapped in a markdown fence.
@@ -972,6 +1098,14 @@ function parseCaptionJSON(text) {
   if (fenced) t = fenced[1];
   try { return JSON.parse(t); }
   catch (e) {
+    // Truncated mid-generation? Keep the platforms that did come through
+    // instead of discarding a mostly-good response. __partial is
+    // non-enumerable so callers iterating platform keys never see it.
+    var salvaged = salvageCaptionObject(t);
+    if (salvaged) {
+      Object.defineProperty(salvaged, "__partial", { value: true, enumerable: false });
+      return salvaged;
+    }
     // Providers under rate pressure often return the limit notice as PROSE
     // with HTTP 200, which sails past the status-code checks in llm.js and
     // lands here. Name the real problem instead of a generic JSON error —
@@ -1050,7 +1184,13 @@ async function suggestCaptionsFromText(transcript, count, evidenceBlock, context
   var names = PLATFORMS.map(function (p) { return p.name; });
   var textPrompt = "Here is a transcript of a video clip:\n\n" + transcript + (contextBlk || "") + "\n\n" +
     captionSuggestPrompt(names, count) + (evidenceBlock || "");
-  var text = await generateText(config, { prompt: textPrompt, jsonMode: true, temperature: 0.5, thinking: getThinkingPref() === "on", onPhase: onPhase });
+  var text = await generateText(config, {
+    prompt: textPrompt, jsonMode: true, temperature: 0.5,
+    thinking: getThinkingPref() === "on",
+    maxTokens: captionTokenBudget(names, count, getCaptionLengthPref()),
+    partialOnTruncate: true,
+    onPhase: onPhase,
+  });
   return parseCaptionJSON(text);
 }
 
@@ -1063,14 +1203,20 @@ async function suggestCaptionsFromVideo(file, mode, count, evidenceBlock, contex
       throw new Error("Video analysis needs Gemini — switch provider in Settings, or use transcript mode.");
     }
     var visionPrompt = "Watch this video clip, then: " + captionSuggestPrompt(names, count) + (contextBlk || "") + (evidenceBlock || "");
-    var text = await generateFromMedia(config, { file: file, prompt: visionPrompt, jsonMode: true, mediaKind: "video", thinking: getThinkingPref() === "on", onPhase: onPhase });
+    var text = await generateFromMedia(config, {
+      file: file, prompt: visionPrompt, jsonMode: true, mediaKind: "video",
+      thinking: getThinkingPref() === "on",
+      maxTokens: captionTokenBudget(names, count, getCaptionLengthPref()),
+      partialOnTruncate: true,
+      onPhase: onPhase,
+    });
     return parseCaptionJSON(text);
   }
 
   onPhase("Transcribing");
   var mediaKind = (file.type || "").indexOf("video/") === 0 ? "video" : "audio";
   // Pure transcription — thinking is wasted tokens here; never enable it.
-  var transcript = await generateFromMedia(config, { file: file, prompt: TRANSCRIBE_FOR_CAPTIONS_PROMPT, mediaKind: mediaKind, thinking: false, onPhase: onPhase });
+  var transcript = await generateFromMedia(config, { file: file, prompt: TRANSCRIBE_FOR_CAPTIONS_PROMPT, mediaKind: mediaKind, thinking: false, maxTokens: 8000, onPhase: onPhase });
   onPhase("Writing captions");
   return suggestCaptionsFromText(transcript, count, evidenceBlock, contextBlk, onPhase);
 }
@@ -1122,8 +1268,13 @@ $("#suggestBtn").addEventListener("click", async function () {
     });
     renderPlatforms();
     saveSession();
-    var extra = ev.winners.length ? " (leaning on " + ev.winners.length + " HOOKLAB winner" + (ev.winners.length > 1 ? "s" : "") + ")" : "";
-    toast("Caption suggestions ready — pick one per platform" + extra);
+    if (results.__partial) {
+      var got = PLATFORMS.filter(function (p) { return Array.isArray(results[p.name]); }).length;
+      toast("Suggestions for " + got + " of " + PLATFORMS.length + " platforms (the response was cut off) — run again for the rest", 6000);
+    } else {
+      var extra = ev.winners.length ? " (leaning on " + ev.winners.length + " HOOKLAB winner" + (ev.winners.length > 1 ? "s" : "") + ")" : "";
+      toast("Caption suggestions ready — pick one per platform" + extra);
+    }
   } catch (err) {
     console.error(err);
     var msg = err && err.message ? err.message : "unknown error";
