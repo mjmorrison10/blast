@@ -305,3 +305,39 @@ input#videohook:focus{outline:none;border-color:var(--brand)}
   .providerrow{flex-direction:column;gap:8px}
   .providerrow .radiopill{width:100%}
 }
+
+/* === Clip batch === */
+.queuepanel{border:1px solid var(--border);border-radius:12px;background:var(--surface2);
+  padding:14px 16px;margin:18px 0}
+.queuepanel.hidden{display:none}
+.queuehead{display:flex;gap:14px;align-items:flex-start;justify-content:space-between;flex-wrap:wrap}
+.queuetitle{font-weight:700;font-size:15px}
+.queueactions{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.queuelist{display:flex;flex-direction:column;gap:8px;margin-top:12px}
+.clipcard{border:1px solid var(--border);border-radius:10px;background:var(--surface)}
+.clipcard.open{border-color:var(--brand)}
+.cliphead{display:flex;gap:10px;align-items:center;padding:10px 12px;flex-wrap:wrap}
+.clipexpand{background:none;border:none;color:var(--muted);cursor:pointer;font-size:14px;
+  min-width:28px;min-height:28px}
+.clipmeta{flex:1;min-width:180px}
+.clippreview{font-size:13.5px;line-height:1.35}
+.clipsub{font-family:var(--mono);font-size:11px;color:var(--faint);margin-top:2px}
+.clipbadge{font-family:var(--mono);font-size:10.5px;padding:3px 8px;border-radius:999px;
+  border:1px solid var(--border);color:var(--muted);white-space:nowrap}
+.clipbadge[data-gen="ready"]{color:var(--pos);border-color:transparent;background:var(--pos-ghost)}
+.clipbadge[data-gen="partial"]{color:var(--warn);border-color:transparent;background:var(--warn-ghost)}
+.clipbadge[data-gen="error"]{color:var(--danger);border-color:transparent;background:var(--danger-ghost)}
+.clipcount{font-family:var(--mono);font-size:11.5px;color:var(--muted)}
+.cliperr{margin:0 12px 10px}
+.clipbody{padding:0 12px 12px}
+.clipbase{width:100%;background:var(--ground);border:1px solid var(--border);border-radius:9px;
+  padding:10px 12px;color:var(--ink);font-family:var(--sans);font-size:14px;resize:vertical;
+  margin-bottom:12px}
+.pickhead{font-size:14px;font-weight:600;margin-bottom:4px}
+.pickgrid{display:flex;flex-direction:column;gap:8px}
+.pickdefault{margin-top:10px}
+.pickfoot{display:flex;gap:9px;justify-content:flex-end;margin-top:14px}
+@media (max-width:480px){
+  .queueactions{width:100%}
+  .queueactions .btn{flex:1}
+}

@@ -300,7 +300,133 @@ function bumpStatus(name, next) {
 // whole working session — base caption, per-platform captions/suggestions/
 // picks, and posting status — survives, so BLAST feels like a workspace.
 var LS_SESSION = "blast_session_v1";
+// === Multi-post model ===
+// BLAST used to hold exactly one clip. It now holds a LIST of posts — the
+// batch RECALL sends over, plus a permanent "Quick post" that is the old
+// paste-a-caption-and-go flow. `posts` is the source of truth; the
+// platform* maps below are live references into whichever post is open, so
+// every existing handler mutates the post itself rather than a copy.
+var LS_QUEUE = "blast_queue_v1";
+var LS_BATCH_COUNT = "blast_batch_count_v1";
+var posts = [];
+var activeKey = "quick";
+function blankPost(key, extra) {
+  var p = {
+    key: key, srcId: "", srcTitle: "", t: "", sec: 0,
+    text: "", hookText: "", label: "", platforms: null,
+    captions: {}, titles: {}, suggestions: {}, picked: {},
+    status: {}, postUrl: {}, postedAt: {}, postedCaption: {},
+    genState: "pending", genError: "",
+    source: key === "quick" ? "quick" : "recall", createdAt: Date.now(), updatedAt: Date.now(),
+  };
+  if (extra) for (var k in extra) p[k] = extra[k];
+  return p;
+}
+function findPost(key) {
+  for (var i = 0; i < posts.length; i++) if (posts[i].key === key) return posts[i];
+  return null;
+}
+function activePost() { return findPost(activeKey) || posts[0]; }
+function quickPost() { return findPost("quick"); }
+// Which platforms this post is for. A per-clip choice keeps the AI (and the
+// card) from covering places this particular clip was never going to.
+var queueDefaultPlatforms = null;
+function selectedNames(post) {
+  var sel = (post && post.platforms) || queueDefaultPlatforms;
+  if (!sel || !sel.length) return PLATFORMS.map(function (p) { return p.name; });
+  return PLATFORMS.filter(function (p) { return sel.indexOf(p.name) >= 0; }).map(function (p) { return p.name; });
+}
+function selectedPlatforms(post) {
+  var names = selectedNames(post);
+  return PLATFORMS.filter(function (p) { return names.indexOf(p.name) >= 0; });
+}
+// Point the working maps at this post's own objects (by reference — mutating
+// them mutates the post). This is what lets ~240 lines of existing card
+// wiring keep working untouched against whichever post is open.
+function bindPost(post) {
+  if (!post) return;
+  activeKey = post.key;
+  platformCaptions = post.captions = post.captions || {};
+  platformTitles = post.titles = post.titles || {};
+  platformSuggestions = post.suggestions = post.suggestions || {};
+  platformPickedIdx = post.picked = post.picked || {};
+  platformStatus = post.status = post.status || {};
+  platformPostUrl = post.postUrl = post.postUrl || {};
+  platformPostedAt = post.postedAt = post.postedAt || {};
+  platformPostedCaption = post.postedCaption = post.postedCaption || {};
+}
+function loadPosts() {
+  var q = null;
+  try { q = JSON.parse(localStorage.getItem(LS_QUEUE)); } catch (e) {}
+  posts = (q && q.v === 1 && Array.isArray(q.clips)) ? q.clips : [];
+  queueDefaultPlatforms = (q && q.defaultPlatforms) || null;
+  // The Quick post always exists and always sorts first.
+  var quick = findPost("quick");
+  if (!quick) { quick = blankPost("quick"); posts.unshift(quick); }
+  else if (posts[0] !== quick) { posts = [quick].concat(posts.filter(function (p) { return p !== quick; })); }
+  return quick;
+}
+// One-way migration: an in-flight single-clip session becomes the Quick post,
+// so upgrading mid-session loses nothing.
+function migrateSessionIntoQuick(quick) {
+  var s = null;
+  try { s = JSON.parse(localStorage.getItem(LS_SESSION)); } catch (e) {}
+  if (!s) return;
+  var untouched = !quick.text && !Object.keys(quick.captions || {}).length &&
+                  !Object.keys(quick.status || {}).length;
+  if (!untouched) return;
+  quick.text = typeof s.base === "string" ? s.base : "";
+  quick.hookText = typeof s.videoHook === "string" ? s.videoHook : "";
+  quick.captions = s.captions || {};
+  quick.titles = s.titles || {};
+  quick.suggestions = s.suggestions || {};
+  quick.picked = s.picked || {};
+  quick.status = s.status || {};
+  quick.postUrl = s.postUrl || {};
+  quick.postedAt = s.postedAt || {};
+  quick.postedCaption = s.postedCaption || {};
+}
+function savePosts() {
+  try {
+    localStorage.setItem(LS_QUEUE, JSON.stringify({
+      v: 1, updatedAt: Date.now(), defaultPlatforms: queueDefaultPlatforms,
+      batchCount: getBatchCount(), clips: posts,
+    }));
+  } catch (e) {
+    // Suggestion arrays are by far the biggest thing in here — drop the ones
+    // the user hasn't picked (oldest clips first) and try once more, so a full
+    // batch degrades to "captions kept, extra options lost" instead of
+    // "nothing saved".
+    var freed = false;
+    for (var i = posts.length - 1; i >= 0 && !freed; i--) {
+      if (posts[i].key === "quick") continue;
+      if (Object.keys(posts[i].suggestions || {}).length) { posts[i].suggestions = {}; freed = true; }
+    }
+    if (freed) { toast("Storage is full — dropped unused caption options to keep your captions", 6000); savePosts(); }
+    else toast("Couldn't save the batch (storage full)", 6000);
+  }
+}
+function getBatchCount() {
+  var v = 1;
+  try { v = parseInt(localStorage.getItem(LS_BATCH_COUNT), 10) || 1; } catch (e) {}
+  return v === 2 || v === 3 ? v : 1;
+}
+function setBatchCount(v) { try { localStorage.setItem(LS_BATCH_COUNT, String(v)); } catch (e) {} }
+
+function syncQuickInputs() {
+  var quick = quickPost();
+  if (!quick) return;
+  var cap = document.querySelector("#caption");
+  var vh = document.querySelector("#videohook");
+  if (cap) quick.text = cap.value;
+  if (vh) quick.hookText = vh.value;
+}
 function saveSession() {
+  syncQuickInputs();
+  savePosts();
+  // blast_session_v1 stays the Quick post's projection: PULSE and the rest of
+  // the stack read that shape, so it must keep working exactly as before.
+  if (activeKey !== "quick") return;
   try {
     localStorage.setItem(LS_SESSION, JSON.stringify({
       base: (document.querySelector("#caption") || {}).value || "",
@@ -319,29 +445,29 @@ function saveSession() {
   } catch (e) { /* quota — non-fatal, session just won't persist */ }
 }
 function loadSession() {
-  try {
-    var s = JSON.parse(localStorage.getItem(LS_SESSION));
-    if (!s) return;
-    platformCaptions = s.captions || {};
-    platformTitles = s.titles || {};
-    platformSuggestions = s.suggestions || {};
-    platformPickedIdx = s.picked || {};
-    platformStatus = s.status || {};
-    platformPostUrl = s.postUrl || {};
-    platformPostedAt = s.postedAt || {};
-    platformPostedCaption = s.postedCaption || {};
-    var cap = document.querySelector("#caption");
-    if (cap && typeof s.base === "string") cap.value = s.base;
-    var vh = document.querySelector("#videohook");
-    if (vh && typeof s.videoHook === "string") vh.value = s.videoHook;
-    var tr = document.querySelector("#transcript");
-    if (tr && typeof s.transcript === "string") tr.value = s.transcript;
-  } catch (e) { /* corrupt — start fresh */ }
+  var quick = loadPosts();
+  migrateSessionIntoQuick(quick);
+  bindPost(quick);
+  savePosts();   // persist the migrated/created Quick post immediately, so the
+                 // posts model is on disk even if the user never types
+  var cap = document.querySelector("#caption");
+  if (cap) cap.value = quick.text || "";
+  var vh = document.querySelector("#videohook");
+  if (vh) vh.value = quick.hookText || "";
+  var tr = document.querySelector("#transcript");
+  if (tr) {
+    var t = ""; try { t = (JSON.parse(localStorage.getItem(LS_SESSION)) || {}).transcript || ""; } catch (e) {}
+    tr.value = t;
+  }
 }
+// Resets the Quick post only — a queued batch is the user's work, not session
+// scratch, and is cleared per-clip from its card instead.
 function resetSession() {
-  platformCaptions = {}; platformTitles = {}; platformSuggestions = {}; platformPickedIdx = {};
-  platformStatus = {}; platformPostUrl = {};
-  platformPostedAt = {}; platformPostedCaption = {};
+  var quick = quickPost() || blankPost("quick");
+  quick.text = ""; quick.hookText = "";
+  quick.captions = {}; quick.titles = {}; quick.suggestions = {}; quick.picked = {};
+  quick.status = {}; quick.postUrl = {}; quick.postedAt = {}; quick.postedCaption = {};
+  bindPost(quick);
   var cap = document.querySelector("#caption");
   if (cap) cap.value = "";
   var vh = document.querySelector("#videohook");
@@ -375,6 +501,8 @@ function applyTemplate(tpl, base) {
   return String(tpl).split("{caption}").join(base);
 }
 function currentBase() {
+  var post = activePost();
+  if (post && post.key !== "quick") return String(post.text || "").trim();
   return (($("#caption") || {}).value || "").trim();
 }
 
@@ -401,7 +529,7 @@ function suggestTitle(s) { return (s && typeof s === "object") ? String(s.title 
 // caption if present, else the shared base caption.
 function captionFor(p, pcaptionEl) {
   var own = pcaptionEl ? pcaptionEl.value : platformCaptions[p.name];
-  return ((own || "").trim() || ($("#caption").value || "")).trim();
+  return ((own || "").trim() || currentBase()).trim();
 }
 
 // Pure, cheap, zero-AI caption check. All findings are advisory — nothing here
@@ -434,10 +562,22 @@ function copyText(text) {
   return navigator.clipboard.writeText(text);
 }
 
-function renderPlatforms() {
-  var wrap = $("#platforms");
+// Renders ONE post's platform cards into `wrap`. Every existing card handler
+// reads the module-level platform* maps, so a capture-phase binder points
+// those maps at this post before any handler body runs — that is what lets
+// several posts' sections coexist in the DOM without a "load this one first"
+// step.
+function renderPlatformSection(post, wrap) {
+  if (!wrap) return;
+  bindPost(post);
   wrap.innerHTML = "";
-  PLATFORMS.forEach(function (p) {
+  if (!wrap.__bound) {
+    wrap.__bound = 1;
+    ["click", "input", "change", "focusin"].forEach(function (ev) {
+      wrap.addEventListener(ev, function () { bindPost(post); }, true);
+    });
+  }
+  selectedPlatforms(post).forEach(function (p) {
     var card = document.createElement("div");
     var st = statusOf(p.name);
     card.className = "platformcard status-" + st;
@@ -621,12 +761,143 @@ function renderPlatforms() {
   refreshStatus();
 }
 
+
+// The Quick post owns the original #platforms grid; each queued clip owns the
+// grid inside its own card. renderPlatforms() refreshes whatever is on screen,
+// so every existing call site keeps working.
+var expandedKeys = Object.create(null);
+function renderPlatforms() {
+  var quick = quickPost();
+  if (quick) renderPlatformSection(quick, $("#platforms"));
+  renderQueue();
+  bindPost(activePost() || quick);
+}
+
+// --- queue UI ---
+function postPreview(post) {
+  var t = (post.hookText || post.text || "").replace(/\s+/g, " ").trim();
+  return t.length > 70 ? t.slice(0, 69) + "…" : (t || "(no caption yet)");
+}
+function postPostedCount(post) {
+  var n = 0;
+  selectedNames(post).forEach(function (name) { if ((post.status || {})[name] === "posted") n++; });
+  return n;
+}
+var GEN_BADGE = { pending: "Not written", ready: "Captions ready", partial: "Partly written", error: "Failed" };
+function queueClips() { return posts.filter(function (p) { return p.key !== "quick"; }); }
+
+function renderQueue() {
+  var host = $("#queue");
+  if (!host) return;
+  var clips = queueClips();
+  var panel = $("#queuePanel");
+  if (panel) panel.classList.toggle("hidden", clips.length === 0);
+  if (!clips.length) { host.innerHTML = ""; return; }
+  host.innerHTML = clips.map(function (c) {
+    var open = !!expandedKeys[c.key];
+    var names = selectedNames(c);
+    return '<div class="clipcard' + (open ? " open" : "") + '" data-key="' + escHtml(c.key) + '">' +
+      '<div class="cliphead">' +
+        '<button class="clipexpand" type="button" aria-expanded="' + open + '">' + (open ? "▾" : "▸") + '</button>' +
+        '<div class="clipmeta"><div class="clippreview">' + escHtml(postPreview(c)) + '</div>' +
+        '<div class="clipsub">' + escHtml(c.srcTitle || "") + (c.t ? " · " + escHtml(c.t) : "") + '</div></div>' +
+        '<span class="clipbadge" data-gen="' + c.genState + '">' + (GEN_BADGE[c.genState] || c.genState) + '</span>' +
+        '<span class="clipcount">' + postPostedCount(c) + "/" + names.length + '</span>' +
+        '<button class="linkbtn clipplat" type="button">Platforms</button>' +
+        '<button class="linkbtn clipdrop" type="button" aria-label="Remove clip">×</button>' +
+      '</div>' +
+      (c.genError ? '<div class="ai-error on cliperr">' + escHtml(c.genError) + '</div>' : "") +
+      '<div class="clipbody"' + (open ? "" : ' hidden') + '>' +
+        '<label class="fieldlabel">Base caption for this clip</label>' +
+        '<textarea class="clipbase" rows="2">' + escHtml(c.text || "") + '</textarea>' +
+        '<div class="platforms" data-key="' + escHtml(c.key) + '"></div>' +
+      '</div>' +
+    '</div>';
+  }).join("");
+
+  host.querySelectorAll(".clipcard").forEach(function (el) {
+    var key = el.dataset.key;
+    var post = findPost(key);
+    if (!post) return;
+    el.querySelector(".clipexpand").addEventListener("click", function () {
+      if (expandedKeys[key]) delete expandedKeys[key]; else expandedKeys[key] = 1;
+      renderQueue();
+    });
+    el.querySelector(".clipdrop").addEventListener("click", function () {
+      if (!confirm("Remove this clip from the batch? Captions for it are lost.")) return;
+      posts = posts.filter(function (p) { return p.key !== key; });
+      delete expandedKeys[key];
+      if (activeKey === key) bindPost(quickPost());
+      savePosts(); renderPlatforms(); refreshStatus();
+    });
+    el.querySelector(".clipplat").addEventListener("click", function () { openPlatformPicker(post); });
+    var base = el.querySelector(".clipbase");
+    if (base) base.addEventListener("input", function () {
+      post.text = base.value;
+      post.updatedAt = Date.now();
+      savePosts();
+    });
+    // Only expanded cards pay for a 9-platform grid — 24 collapsed cards stay cheap.
+    if (expandedKeys[key]) renderPlatformSection(post, el.querySelector('.platforms[data-key="' + CSS.escape(key) + '"]'));
+  });
+}
+function renderQueueBadges() {
+  document.querySelectorAll(".clipcard").forEach(function (el) {
+    var post = findPost(el.dataset.key);
+    if (!post) return;
+    var count = el.querySelector(".clipcount");
+    if (count) count.textContent = postPostedCount(post) + "/" + selectedNames(post).length;
+    var badge = el.querySelector(".clipbadge");
+    if (badge) { badge.textContent = GEN_BADGE[post.genState] || post.genState; badge.setAttribute("data-gen", post.genState); }
+  });
+}
+
+// Per-clip platform choice. Skipping the platforms a clip was never going to
+// means fewer cards to scroll AND a smaller, faster, cheaper AI request.
+function openPlatformPicker(post) {
+  var cur = selectedNames(post);
+  var box = $("#platpicker");
+  if (!box) return;
+  box.innerHTML =
+    '<div class="pickhead">Platforms for “' + escHtml(postPreview(post)) + '”</div>' +
+    '<div class="pickgrid">' + PLATFORMS.map(function (p) {
+      return '<label class="radiopill"><input type="checkbox" value="' + escHtml(p.name) + '"' +
+        (cur.indexOf(p.name) >= 0 ? " checked" : "") + '><span class="rbody"><span class="rtitle">' +
+        escHtml(p.name) + '</span></span></label>';
+    }).join("") + '</div>' +
+    '<label class="radiopill pickdefault"><input type="checkbox" id="pickAsDefault"><span class="rbody">' +
+    '<span class="rtitle">Use this set for new clips too</span></span></label>' +
+    '<div class="pickfoot"><button class="btn ghost" id="pickCancel" type="button">Cancel</button>' +
+    '<button class="btn primary" id="pickSave" type="button">Save platforms</button></div>';
+  $("#pickscrim").classList.add("open");
+  $("#pickCancel").addEventListener("click", closePlatformPicker);
+  $("#pickSave").addEventListener("click", function () {
+    var chosen = [].slice.call(box.querySelectorAll('.pickgrid input:checked')).map(function (i) { return i.value; });
+    if (!chosen.length) { toast("Pick at least one platform"); return; }
+    post.platforms = chosen;
+    post.updatedAt = Date.now();
+    if ($("#pickAsDefault").checked) queueDefaultPlatforms = chosen.slice();
+    savePosts();
+    closePlatformPicker();
+    renderPlatforms(); refreshStatus();
+    toast(chosen.length + " platform" + (chosen.length === 1 ? "" : "s") + " for this clip");
+  });
+}
+function closePlatformPicker() {
+  var sc = $("#pickscrim");
+  if (sc) sc.classList.remove("open");
+}
+
 // Update just the status chips + card classes + session summary without
 // tearing down the whole grid (which would blur a field mid-edit).
 function refreshStatus() {
-  var cards = document.querySelectorAll("#platforms .platformcard");
+  var post = activePost();
+  var names = selectedNames(post);
+  var section = document.querySelector('.platforms[data-key="' + (post ? post.key : "quick") + '"]') || $("#platforms");
+  var cards = section ? section.querySelectorAll(".platformcard") : [];
   var posted = 0, done = 0;
-  PLATFORMS.forEach(function (p, i) {
+  names.forEach(function (name, i) {
+    var p = { name: name };
     var st = statusOf(p.name);
     var card = cards[i];
     if (card) {
@@ -643,15 +914,32 @@ function refreshStatus() {
     if (st === "posted") posted++;
     if (st === "posted" || st === "skipped") done++;
   });
+  // The bar summarizes the whole batch, not just the post you happen to have
+  // open — with 24 clips queued, "3 of 9" would be meaningless.
+  var totPosted = 0, totDone = 0, totSlots = 0, clipsWithPosts = 0;
+  posts.forEach(function (pt) {
+    var ns = selectedNames(pt), any = 0;
+    totSlots += ns.length;
+    ns.forEach(function (n) {
+      var st = (pt.status && pt.status[n]) || "none";
+      if (st === "posted") { totPosted++; any++; }
+      if (st === "posted" || st === "skipped") totDone++;
+    });
+    if (any) clipsWithPosts++;
+  });
   var sub = $("#sessionSub");
   if (sub) {
-    sub.textContent = posted + " of " + PLATFORMS.length + " posted" +
-      (done > posted ? " · " + (done - posted) + " skipped" : "");
+    sub.textContent = posts.length > 1
+      ? totPosted + " of " + totSlots + " posted across " + posts.length + " clips" +
+        (totDone > totPosted ? " · " + (totDone - totPosted) + " skipped" : "")
+      : totPosted + " of " + totSlots + " posted" +
+        (totDone > totPosted ? " · " + (totDone - totPosted) + " skipped" : "");
   }
   var pulseLink = $("#pulseLink");
-  if (pulseLink) pulseLink.classList.toggle("hidden", posted === 0);
+  if (pulseLink) pulseLink.classList.toggle("hidden", totPosted === 0);
   var bar = $("#sessionProgress");
-  if (bar) bar.style.setProperty("--pct", Math.round((done / PLATFORMS.length) * 100) + "%");
+  if (bar) bar.style.setProperty("--pct", (totSlots ? Math.round((totDone / totSlots) * 100) : 0) + "%");
+  renderQueueBadges();
 }
 
 // Surgical, per-card — same discipline as refreshStatus: update only the
@@ -662,7 +950,7 @@ function refreshValidation(card, p) {
   var valcount = card.querySelector(".valcount");
   var valwarn = card.querySelector(".valwarn");
   if (!pcaption || !valcount) return;
-  var text = (pcaption.value || "").trim() || ($("#caption").value || "").trim();
+  var text = (pcaption.value || "").trim() || String((activePost() || {}).text || "").trim();
   var r = validate(text, PLATFORM_RULES[p.name]);
   valcount.textContent = r.count + " / " + r.limit;
   valcount.setAttribute("data-level", r.over ? "over" : r.near ? "near" : "ok");
@@ -930,6 +1218,100 @@ document.addEventListener("keydown", function (e) {
   if (e.key === "Escape" && settingscrim.classList.contains("open")) closeSettings();
 });
 
+
+// === Batch generate ===
+// The whole point of the batch: set each clip's platforms, hit one button, and
+// come back to a set of ready-to-post captions instead of waiting on the AI
+// once per clip while you're out.
+var batchCancel = false;
+async function generateAllQueued() {
+  var clips = queueClips().filter(function (c) { return c.genState !== "ready"; });
+  if (!clips.length) { toast("Every queued clip already has captions"); return; }
+  var count = getBatchCount();
+  var btn = $("#genAll"), stop = $("#genStop");
+  var label = $("#genAllLabel"), err = $("#genAllError");
+  batchCancel = false;
+  btn.disabled = true;
+  if (stop) stop.classList.remove("hidden");
+  var ok = 0, failed = 0;
+  try {
+    for (var i = 0; i < clips.length; i++) {
+      if (batchCancel) break;
+      var clip = clips[i];
+      var names = selectedNames(clip);
+      var base = (clip.text || "").trim();
+      if (!base) { clip.genState = "error"; clip.genError = "This clip has no caption text to work from."; failed++; savePosts(); renderQueue(); continue; }
+      var seed = clip.hookText ? base + "\n\nOpening hook: " + clip.hookText : base;
+      try {
+        var res = await aiRun("queue-" + (count > 1 ? "suggest" : "adapt"), label, err,
+          "Clip " + (i + 1) + "/" + clips.length, (function (c, ns, sd, n) {
+            return function (onPhase) { return generateForClip(c, ns, sd, n, onPhase); };
+          })(clip, names, seed, count));
+        clip.genState = res.partial ? "partial" : "ready";
+        clip.genError = res.partial ? "Some platforms were cut off — run this clip again for the rest." : "";
+        ok++;
+      } catch (e) {
+        // One clip failing must not end the batch — mark it and keep going.
+        clip.genState = "error";
+        clip.genError = (e && e.message) || "Generation failed";
+        failed++;
+      }
+      clip.updatedAt = Date.now();
+      savePosts();          // after EVERY clip, so a reload mid-batch keeps the finished ones
+      renderQueue();
+    }
+  } finally {
+    btn.disabled = false;
+    if (stop) stop.classList.add("hidden");
+    if (label) label.textContent = "";
+    renderPlatforms(); refreshStatus();
+  }
+  var msg = ok + " clip" + (ok === 1 ? "" : "s") + " captioned";
+  if (failed) msg += ", " + failed + " failed — open a clip to see why";
+  if (batchCancel) msg += " (stopped)";
+  toast(msg, failed || batchCancel ? 6000 : undefined);
+}
+
+// One clip: either a single caption per platform (count 1) or a set of options
+// the card's existing picker can switch between (count 2-3).
+async function generateForClip(clip, names, seed, count, onPhase) {
+  if (count > 1) {
+    var out = await suggestCaptionsForNames(seed, names, count, onPhase);
+    names.forEach(function (name) {
+      var arr = out[name];
+      if (!Array.isArray(arr) || !arr.length) return;
+      clip.suggestions[name] = arr.slice(0, count).map(function (x) {
+        if (name === "Pinterest" && x && typeof x === "object") {
+          return { title: String(x.title || "").slice(0, 100), description: String(x.description || "") };
+        }
+        return String(x);
+      });
+      // Apply the first option so every card is copy-ready without a click;
+      // the existing suggestion chips still let you switch.
+      clip.picked[name] = 0;
+      var first = clip.suggestions[name][0];
+      if (name === "Pinterest" && first && typeof first === "object") {
+        clip.captions[name] = first.description || "";
+        clip.titles[name] = first.title || "";
+      } else {
+        clip.captions[name] = String(first);
+      }
+    });
+    return { partial: !!out.__partial };
+  }
+  var adapted = await adaptCaptionsForPlatforms(seed, onPhase, names);
+  names.forEach(function (name) {
+    var v = adapted[name];
+    if (name === "Pinterest" && v && typeof v === "object") {
+      if (v.description != null) clip.captions[name] = String(v.description).trim();
+      if (v.title != null) clip.titles[name] = String(v.title).trim().slice(0, 100);
+    } else if (typeof v === "string" && v.trim()) {
+      clip.captions[name] = v.trim();
+    }
+  });
+  return { partial: !!adapted.__partial };
+}
+
 // === Adapt caption per platform (provider-aware: Gemini or OpenRouter) ===
 async function adaptCaptionsForPlatforms(baseCaption, onPhase, only) {
   var names = (only && only.length ? only : PLATFORMS.map(function (p) { return p.name; }));
@@ -1019,10 +1401,11 @@ var TRANSCRIBE_FOR_CAPTIONS_PROMPT = "Transcribe the spoken audio in this clip p
   "no speaker labels, just the words said as one block of text. If there's no speech, briefly describe " +
   "what's visually happening instead.";
 
+function captionSuggestPromptFor(names, count) { return captionSuggestPrompt(names, count); }
 function captionSuggestPrompt(names, count) {
   return "Propose exactly " + count + " distinct caption option" + (count > 1 ? "s" : "") + " for each of " +
     "these platforms, tailored to each platform's real conventions (typical length, hashtag style, tone): " +
-    names.join(", ") + "." + lengthGuidanceBlock(getCaptionLengthPref()) +
+    names.join(", ") + "." + lengthGuidanceBlock(getCaptionLengthPref(), names) +
     "\n\nFor \"Pinterest\" only, each option must be an object with keys \"title\" (a punchy, searchable Pin " +
     "title, hard cap 100 chars) and \"description\" (hard cap 500 chars) instead of a plain string.\n\n" +
     "Respond with ONLY a JSON object whose keys are exactly the platform names above and whose values are " +
@@ -1177,6 +1560,21 @@ function renderHookStatus() {
     " and mark winners to personalize these suggestions.";
   var link = $("#hookOpen");
   if (link) link.addEventListener("click", function () { window.open(HOOKLAB_URL, "_blank", "noopener"); });
+}
+
+// Batch variant: same prompt, restricted to the platforms this clip is for.
+async function suggestCaptionsForNames(seed, names, count, onPhase) {
+  var config = getProviderConfig();
+  var prompt = "Here is a short-form video clip's caption seed:\n\n" + seed + "\n\n" +
+    captionSuggestPromptFor(names, count);
+  var text = await generateText(config, {
+    prompt: prompt, jsonMode: true, temperature: 0.5,
+    thinking: getThinkingPref() === "on",
+    maxTokens: captionTokenBudget(names, count, getCaptionLengthPref()),
+    partialOnTruncate: true,
+    onPhase: onPhase,
+  });
+  return parseCaptionJSON(text);
 }
 
 async function suggestCaptionsFromText(transcript, count, evidenceBlock, contextBlk, onPhase) {
@@ -1496,3 +1894,45 @@ $("#reformatBtn").addEventListener("click", async function () {
     btn.disabled = false;
   }
 });
+
+// === Batch controls ===
+(function () {
+  var genAll = $("#genAll");
+  if (genAll) genAll.addEventListener("click", generateAllQueued);
+  var stop = $("#genStop");
+  if (stop) stop.addEventListener("click", function () { batchCancel = true; toast("Stopping after this clip…"); });
+  var clear = $("#queueClear");
+  if (clear) clear.addEventListener("click", function () {
+    var n = queueClips().length;
+    if (!n) return;
+    if (!confirm("Clear all " + n + " queued clips? Their captions are lost.")) return;
+    posts = posts.filter(function (p) { return p.key === "quick"; });
+    expandedKeys = Object.create(null);
+    bindPost(quickPost());
+    savePosts(); renderPlatforms(); refreshStatus();
+    toast("Batch cleared");
+  });
+  document.querySelectorAll('input[name="batchCount"]').forEach(function (r) {
+    r.checked = String(getBatchCount()) === r.value;
+    r.addEventListener("change", function () {
+      if (!r.checked) return;
+      setBatchCount(parseInt(r.value, 10));
+      savePosts();
+      var hint = $("#batchCostHint");
+      if (hint) hint.textContent = batchCostHint();
+    });
+  });
+  var hint = $("#batchCostHint");
+  if (hint) hint.textContent = batchCostHint();
+  var sc = $("#pickscrim");
+  if (sc) sc.addEventListener("click", function (e) { if (e.target === sc) closePlatformPicker(); });
+})();
+function batchCostHint() {
+  var clips = queueClips();
+  if (!clips.length) return "";
+  var slots = 0;
+  clips.forEach(function (c) { slots += selectedNames(c).length; });
+  var n = getBatchCount();
+  return clips.length + " clips · " + slots + " platform captions" +
+    (n > 1 ? " · " + n + " options each (about " + n + "x the tokens and time)" : "");
+}
