@@ -190,23 +190,27 @@
     <div class="mbody">
       <div>
         <label>AI provider</label>
-        <div class="providerrow">
-          <label class="radiopill"><input type="radio" name="provider" id="providerGemini" value="gemini" checked>Gemini <span class="pilltag">default</span></label>
-          <label class="radiopill"><input type="radio" name="provider" id="providerOpenrouter" value="openrouter">OpenRouter <span class="pilltag">pick your model</span></label>
+        <div class="providerrow radiocards">
+          <label class="radiopill"><input type="radio" name="provider" id="providerGemini" value="gemini" checked>
+            <span class="rbody"><span class="rtitle">Gemini</span>
+            <span class="rdesc">The easy default. Only option that can watch a video directly.</span></span></label>
+          <label class="radiopill"><input type="radio" name="provider" id="providerOpenrouter" value="openrouter">
+            <span class="rbody"><span class="rtitle">OpenRouter</span>
+            <span class="rdesc">Pick any text model. No large-file upload, no video analysis.</span></span></label>
         </div>
-        <p class="hint" style="margin-top:8px">Gemini is the easy default and the only option that can watch
-          video directly. OpenRouter lets you pick any text model, but has no large-file upload and can't
-          do video analysis here.</p>
       </div>
 
       <div>
         <label>AI speed vs. quality</label>
-        <div class="providerrow">
-          <label class="radiopill"><input type="radio" name="aiThinking" value="on" checked>Best quality <span class="pilltag">thinking</span></label>
-          <label class="radiopill"><input type="radio" name="aiThinking" value="off">Fastest</label>
+        <div class="providerrow radiocards">
+          <label class="radiopill"><input type="radio" name="aiThinking" value="on" checked>
+            <span class="rbody"><span class="rtitle">Best quality</span>
+            <span class="rdesc">The model thinks before answering. Better captions, slower.</span></span></label>
+          <label class="radiopill"><input type="radio" name="aiThinking" value="off">
+            <span class="rbody"><span class="rtitle">Fastest</span>
+            <span class="rdesc">Skips thinking. Answers sooner, a little rougher.</span></span></label>
         </div>
-        <p class="hint" style="margin-top:8px">"Best quality" lets Gemini think before answering — better
-          results, slower. "Fastest" skips thinking. Gemini only (OpenRouter models decide for themselves);
+        <p class="hint" style="margin-top:8px">Gemini only (OpenRouter models decide for themselves);
           transcription always skips thinking. Saves instantly and applies across RECALL, HOOKLAB, and
           BLAST on this device.</p>
       </div>
