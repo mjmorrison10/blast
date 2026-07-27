@@ -53,6 +53,7 @@
     "hooklab_theme", "blast-theme", "pulse-theme", // device themes
     "stack_models_cache_v1", // 24h model-list cache
     "blast_handoff_v1",      // transient consumed inbox
+    "blast_queue_v1",        // transient batch inbox (device-local posting flow)
     "recall_state_v2"        // legacy LS library fallback (library syncs via recallLibrary)
   ];
   // Excluded from EVERY export, including local file backups (device-specific

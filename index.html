@@ -114,6 +114,30 @@
         just for its audio track. Pasting a transcript works on any provider.</p>
     </div>
 
+    <!-- The batch RECALL sent over: one card per clip, each with its own
+         platforms and captions. Hidden entirely when nothing is queued. -->
+    <div class="queuepanel hidden" id="queuePanel">
+      <div class="queuehead">
+        <div>
+          <div class="queuetitle">Clip batch</div>
+          <div class="hint" id="batchCostHint"></div>
+        </div>
+        <div class="queueactions">
+          <div class="providerrow" id="batchCountGroup" title="Caption options per platform">
+            <label class="radiopill"><input type="radio" name="batchCount" value="1" checked>1</label>
+            <label class="radiopill"><input type="radio" name="batchCount" value="2">2</label>
+            <label class="radiopill"><input type="radio" name="batchCount" value="3">3</label>
+          </div>
+          <button class="btn primary" id="genAll" type="button">Generate captions for all →</button>
+          <button class="btn ghost hidden" id="genStop" type="button">Stop</button>
+          <span class="progress" id="genAllLabel"></span>
+          <button class="linkbtn" id="queueClear" type="button">Clear batch</button>
+        </div>
+      </div>
+      <div class="ai-error" id="genAllError" aria-live="polite"></div>
+      <div class="queuelist" id="queue"></div>
+    </div>
+
     <div class="sessionbar" id="sessionbar">
       <div class="sessionmeta">
         <span class="sessiontitle">Posting session</span>
@@ -182,6 +206,13 @@
     </div>
     <a class="fcta" href="https://mjmorrisonusa.com" target="_blank" rel="noopener">mjmorrisonusa.com &rarr;</a>
   </footer>
+</div>
+
+<div class="scrim" id="pickscrim">
+  <div class="modal" role="dialog" aria-modal="true">
+    <h2>Platforms for this clip</h2>
+    <div class="mbody" id="platpicker"></div>
+  </div>
 </div>
 
 <div class="scrim" id="settingscrim">
