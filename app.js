@@ -197,7 +197,7 @@ function activeModelLabel() {
 }
 // Reasoning/heavyweight tiers: correct answers, minutes-long waits on a
 // multi-platform caption job.
-var SLOW_MODEL_RE = /opus|o1|o3(?!-mini)|gpt-4-turbo|deepseek-r1|reason|thinking|405b/i;
+var SLOW_MODEL_RE = /opus|o1|o3(?!-mini)|gpt-4-turbo|deepseek-r1|\br1\b|qwq|qwen-?3|glm-4\.[5-9]|kimi|minimax|magistral|sonar-reasoning|grok-[3-9]|reason|think|405b/i;
 function activeModelIsSlow() {
   var cfg = getProviderConfig();
   return cfg.provider === "openrouter" && SLOW_MODEL_RE.test(String(cfg.openrouterModel || ""));
@@ -1312,6 +1312,23 @@ async function generateForClip(clip, names, seed, count, onPhase) {
   return { partial: !!adapted.__partial };
 }
 
+// A model that replied with prose (or spent its budget reasoning) usually
+// complies when told bluntly. Retry the SAME prompt once with a hard
+// instruction before surfacing the failure — cheaper than making the user
+// notice, re-read the error and click again.
+var JSON_ONLY_NUDGE = "\n\nIMPORTANT: Respond with ONLY the JSON object described above. " +
+  "Your reply must start with '{' and contain no reasoning, explanation, or markdown.";
+function shouldRetryAsJson(err) { return !!(err && (err.nonJson || err.spentThinking)); }
+async function withJsonRetry(onPhase, run) {
+  try {
+    return await run("");
+  } catch (err) {
+    if (!shouldRetryAsJson(err)) throw err;
+    if (onPhase) onPhase("Model didn't return JSON — asking again");
+    return await run(JSON_ONLY_NUDGE);
+  }
+}
+
 // === Adapt caption per platform (provider-aware: Gemini or OpenRouter) ===
 async function adaptCaptionsForPlatforms(baseCaption, onPhase, only) {
   var names = (only && only.length ? only : PLATFORMS.map(function (p) { return p.name; }));
@@ -1325,14 +1342,16 @@ async function adaptCaptionsForPlatforms(baseCaption, onPhase, only) {
     "whose values are the tailored caption strings (for \"Pinterest\", the object described). No markdown, " +
     "no explanation, no extra keys.";
 
-  var text = await generateText(getProviderConfig(), {
-    prompt: prompt, jsonMode: true, temperature: 0.4,
-    thinking: getThinkingPref() === "on",
-    maxTokens: captionTokenBudget(names, 1, getCaptionLengthPref()),
-    partialOnTruncate: true,
-    onPhase: onPhase,
+  return withJsonRetry(onPhase, async function (nudge) {
+    var text = await generateText(getProviderConfig(), {
+      prompt: prompt + nudge, jsonMode: true, temperature: 0.4,
+      thinking: getThinkingPref() === "on",
+      maxTokens: captionTokenBudget(names, 1, getCaptionLengthPref()),
+      partialOnTruncate: true,
+      onPhase: onPhase,
+    });
+    return parseCaptionJSON(text);
   });
-  return parseCaptionJSON(text);
 }
 
 $("#adaptBtn").addEventListener("click", async function () {
@@ -1475,7 +1494,9 @@ function salvageCaptionObject(text) {
 }
 
 function parseCaptionJSON(text) {
-  var t = String(text == null ? "" : text).trim();
+  // Reasoning models leak their monologue into the reply; llm.js strips the
+  // tagged form, this catches anything that arrives by another path.
+  var t = String(text == null ? "" : text).replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, "").trim();
   // Rescue the common near-miss: valid JSON wrapped in a markdown fence.
   var fenced = t.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/);
   if (fenced) t = fenced[1];
@@ -1498,7 +1519,9 @@ function parseCaptionJSON(text) {
     }
     var snip = t.replace(/\s+/g, " ").trim().slice(0, 120);
     if (!snip) throw new Error("Model returned an empty response");
-    throw new Error("Model didn't return JSON — it said: “" + snip + (t.length > 120 ? "…" : "") + "”");
+    var nj = new Error("Model didn't return JSON — it said: “" + snip + (t.length > 120 ? "…" : "") + "”");
+    nj.nonJson = true;   // callers retry once with a blunter instruction
+    throw nj;
   }
 }
 
@@ -1567,14 +1590,16 @@ async function suggestCaptionsForNames(seed, names, count, onPhase) {
   var config = getProviderConfig();
   var prompt = "Here is a short-form video clip's caption seed:\n\n" + seed + "\n\n" +
     captionSuggestPromptFor(names, count);
-  var text = await generateText(config, {
-    prompt: prompt, jsonMode: true, temperature: 0.5,
-    thinking: getThinkingPref() === "on",
-    maxTokens: captionTokenBudget(names, count, getCaptionLengthPref()),
-    partialOnTruncate: true,
-    onPhase: onPhase,
+  return withJsonRetry(onPhase, async function (nudge) {
+    var text = await generateText(config, {
+      prompt: prompt + nudge, jsonMode: true, temperature: 0.5,
+      thinking: getThinkingPref() === "on",
+      maxTokens: captionTokenBudget(names, count, getCaptionLengthPref()),
+      partialOnTruncate: true,
+      onPhase: onPhase,
+    });
+    return parseCaptionJSON(text);
   });
-  return parseCaptionJSON(text);
 }
 
 async function suggestCaptionsFromText(transcript, count, evidenceBlock, contextBlk, onPhase) {
@@ -1582,14 +1607,16 @@ async function suggestCaptionsFromText(transcript, count, evidenceBlock, context
   var names = PLATFORMS.map(function (p) { return p.name; });
   var textPrompt = "Here is a transcript of a video clip:\n\n" + transcript + (contextBlk || "") + "\n\n" +
     captionSuggestPrompt(names, count) + (evidenceBlock || "");
-  var text = await generateText(config, {
-    prompt: textPrompt, jsonMode: true, temperature: 0.5,
-    thinking: getThinkingPref() === "on",
-    maxTokens: captionTokenBudget(names, count, getCaptionLengthPref()),
-    partialOnTruncate: true,
-    onPhase: onPhase,
+  return withJsonRetry(onPhase, async function (nudge) {
+    var text = await generateText(config, {
+      prompt: textPrompt + nudge, jsonMode: true, temperature: 0.5,
+      thinking: getThinkingPref() === "on",
+      maxTokens: captionTokenBudget(names, count, getCaptionLengthPref()),
+      partialOnTruncate: true,
+      onPhase: onPhase,
+    });
+    return parseCaptionJSON(text);
   });
-  return parseCaptionJSON(text);
 }
 
 async function suggestCaptionsFromVideo(file, mode, count, evidenceBlock, contextBlk, onPhase) {
@@ -1601,14 +1628,16 @@ async function suggestCaptionsFromVideo(file, mode, count, evidenceBlock, contex
       throw new Error("Video analysis needs Gemini — switch provider in Settings, or use transcript mode.");
     }
     var visionPrompt = "Watch this video clip, then: " + captionSuggestPrompt(names, count) + (contextBlk || "") + (evidenceBlock || "");
-    var text = await generateFromMedia(config, {
-      file: file, prompt: visionPrompt, jsonMode: true, mediaKind: "video",
-      thinking: getThinkingPref() === "on",
-      maxTokens: captionTokenBudget(names, count, getCaptionLengthPref()),
-      partialOnTruncate: true,
-      onPhase: onPhase,
+    return withJsonRetry(onPhase, async function (nudge) {
+      var text = await generateFromMedia(config, {
+        file: file, prompt: visionPrompt + nudge, jsonMode: true, mediaKind: "video",
+        thinking: getThinkingPref() === "on",
+        maxTokens: captionTokenBudget(names, count, getCaptionLengthPref()),
+        partialOnTruncate: true,
+        onPhase: onPhase,
+      });
+      return parseCaptionJSON(text);
     });
-    return parseCaptionJSON(text);
   }
 
   onPhase("Transcribing");
