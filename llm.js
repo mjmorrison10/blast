@@ -308,6 +308,51 @@ async function geminiGenerateFromMedia(apiKey, opts) {
 // X-Title is a hardcoded ASCII string, not document.title: HTTP header
 // values must be ISO-8859-1, and this app's title has an em dash — using
 // it directly throws at fetch() time and breaks every OpenRouter call.
+// Reasoning-style models on OpenRouter think before they answer, and that
+// thinking is billed (and capped) as OUTPUT tokens. A caption-sized max_tokens
+// therefore cuts them off mid-thought: the response is pure chain-of-thought
+// prose ("We need to produce JSON with keys: YouTube Shorts, TikTok…") and no
+// JSON ever arrives. Detect them by id so we can give them room and ask them
+// to keep the reasoning to themselves.
+var OR_REASONING_RE = /opus|o1|o3(?!-mini)|deepseek-r1|\br1\b|qwq|qwen-?3|glm-4\.[5-9]|kimi|minimax|magistral|sonar-reasoning|grok-[3-9]|reason|think/i;
+var REASONING_HEADROOM = 3;   // thinking easily costs more than the answer
+function isReasoningModel(model) { return OR_REASONING_RE.test(String(model || "")); }
+if (typeof window !== "undefined") window.__isReasoningModel = isReasoningModel;
+
+// Build the OpenRouter body, with reasoning handled per the thinking toggle.
+// exclude:true always — BLAST wants captions, never the model's monologue.
+function openrouterBody(model, messages, opts, temperature) {
+  var body = { model: model, messages: messages, temperature: temperature };
+  if (opts.jsonMode) body.response_format = { type: "json_object" };
+  if (opts.maxTokens) {
+    body.max_tokens = isReasoningModel(model)
+      ? Math.min(16000, opts.maxTokens * REASONING_HEADROOM)
+      : opts.maxTokens;
+  }
+  if (opts.jsonMode) {
+    body.reasoning = opts.thinking === false
+      ? { effort: "minimal", exclude: true }
+      : { exclude: true };
+  }
+  return body;
+}
+
+// Some models mark reasoning mandatory (or don't accept the field at all) and
+// answer 400. Retry once without it rather than failing the run.
+async function openrouterPost(apiKey, body, what, onPhase) {
+  var out = await fetchWithRetry(function () {
+    return fetchBodyWithTimeout(OPENROUTER_ENDPOINT, { method: "POST", headers: openrouterHeaders(apiKey), body: JSON.stringify(body) }, GEN_TIMEOUT_MS, what);
+  }, retryReporter(onPhase));
+  if (out.res.status === 400 && body.reasoning && /reasoning/i.test(out.bodyText || "")) {
+    var retry = {};
+    for (var k in body) if (k !== "reasoning") retry[k] = body[k];
+    out = await fetchWithRetry(function () {
+      return fetchBodyWithTimeout(OPENROUTER_ENDPOINT, { method: "POST", headers: openrouterHeaders(apiKey), body: JSON.stringify(retry) }, GEN_TIMEOUT_MS, what);
+    }, retryReporter(onPhase));
+  }
+  return out;
+}
+
 function openrouterHeaders(apiKey) {
   return {
     "Content-Type": "application/json",
@@ -316,6 +361,19 @@ function openrouterHeaders(apiKey) {
     "X-Title": "BLAST",
   };
 }
+
+// Open reasoning models often leak their monologue into content as
+// <think>…</think> instead of the separate reasoning field. Strip it before
+// anything tries to parse the result.
+function stripThinkTags(s) {
+  return String(s == null ? "" : s)
+    .replace(/<think>[\s\S]*?<\/think>/gi, "")
+    .replace(/<thinking>[\s\S]*?<\/thinking>/gi, "")
+    .trim();
+}
+var SPENT_THINKING_MSG = "The model spent the whole response thinking and never wrote the captions — " +
+  "pick a faster model in Settings (flash/mini/haiku), or just run it again.";
+if (typeof window !== "undefined") window.__stripThinkTags = stripThinkTags;
 
 function extractOpenrouterText(res, bodyText, partialOnTruncate) {
   if (!res.ok) {
@@ -329,21 +387,32 @@ function extractOpenrouterText(res, bodyText, partialOnTruncate) {
   }
   var json = parseJsonBody(bodyText);
   var choice = json && json.choices && json.choices[0];
-  var text = choice && choice.message && choice.message.content;
-  if (!text) throw new Error("Empty response from OpenRouter");
-  if (choice.finish_reason === "length" && !partialOnTruncate) {
+  var msg = (choice && choice.message) || {};
+  var raw = msg.content;
+  var truncated = choice && choice.finish_reason === "length";
+  var reasoned = !!(msg.reasoning || (msg.reasoning_details && msg.reasoning_details.length));
+  var text = stripThinkTags(raw);
+  // A reasoning model that burned its whole budget thinking leaves us either
+  // nothing, or pure monologue with no JSON in it. Say exactly that instead of
+  // "empty response" or quoting the model's train of thought back at the user.
+  var openThink = /<think(?:ing)?>/i.test(String(raw || "")) && !/<\/think(?:ing)?>/i.test(String(raw || ""));
+  if (!text) {
+    if (reasoned || openThink || truncated) { var e = new Error(SPENT_THINKING_MSG); e.spentThinking = true; throw e; }
+    throw new Error("Empty response from OpenRouter");
+  }
+  if (text.indexOf("{") === -1 && (truncated || openThink)) {
+    var e2 = new Error(SPENT_THINKING_MSG); e2.spentThinking = true; throw e2;
+  }
+  if (truncated && !partialOnTruncate) {
     throw new Error("Response hit the token limit and was truncated. Try shorter input.");
   }
   return text;
 }
 
 async function openrouterGenerateText(apiKey, model, opts) {
-  var body = { model: model, messages: [{ role: "user", content: opts.prompt }], temperature: opts.temperature != null ? opts.temperature : 0.4 };
-  if (opts.jsonMode) body.response_format = { type: "json_object" };
-  if (opts.maxTokens) body.max_tokens = opts.maxTokens;
-  var out = await fetchWithRetry(function () {
-    return fetchBodyWithTimeout(OPENROUTER_ENDPOINT, { method: "POST", headers: openrouterHeaders(apiKey), body: JSON.stringify(body) }, GEN_TIMEOUT_MS, "AI request");
-  }, retryReporter(opts.onPhase));
+  var body = openrouterBody(model, [{ role: "user", content: opts.prompt }], opts,
+    opts.temperature != null ? opts.temperature : 0.4);
+  var out = await openrouterPost(apiKey, body, "AI request", opts.onPhase);
   return extractOpenrouterText(out.res, out.bodyText, opts.partialOnTruncate);
 }
 
@@ -373,12 +442,8 @@ async function openrouterGenerateFromMedia(apiKey, model, opts) {
 
   onPhase("Analyzing");
   await yield_();
-  var body = { model: model, messages: [{ role: "user", content: content }], temperature: 0.1 };
-  if (opts.jsonMode) body.response_format = { type: "json_object" };
-  if (opts.maxTokens) body.max_tokens = opts.maxTokens;
-  var out = await fetchWithRetry(function () {
-    return fetchBodyWithTimeout(OPENROUTER_ENDPOINT, { method: "POST", headers: openrouterHeaders(apiKey), body: JSON.stringify(body) }, GEN_TIMEOUT_MS, "AI request");
-  }, retryReporter(onPhase));
+  var body = openrouterBody(model, [{ role: "user", content: content }], opts, 0.1);
+  var out = await openrouterPost(apiKey, body, "AI request", onPhase);
   return extractOpenrouterText(out.res, out.bodyText, opts.partialOnTruncate);
 }
 
