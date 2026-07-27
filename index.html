@@ -58,6 +58,7 @@
       <button class="btn ghost" id="applyAllPresets" type="button">Apply all presets</button>
       <span class="progress" id="adaptLabel"></span>
     </div>
+    <div class="ai-error" id="adaptError" aria-live="polite"></div>
     <p class="hint" style="margin:-10px 0 16px">Uses your own API key (free Gemini tier works) to
       rewrite the caption per platform's length and hashtag conventions.
       <button class="linkbtn" id="openSettingsFromHint" type="button">Add a key in Settings</button>
@@ -107,6 +108,7 @@
         <button class="btn primary" id="suggestBtn" type="button">Suggest captions →</button>
         <span class="progress" id="suggestLabel"></span>
       </div>
+      <div class="ai-error" id="suggestError" aria-live="polite"></div>
       <p class="hint" style="margin-top:10px">*For an actual video file (not audio-only), transcribe mode
         still needs Gemini in this version — OpenRouter has no path to read a video file at all yet, even
         just for its audio track. Pasting a transcript works on any provider.</p>
@@ -195,6 +197,18 @@
         <p class="hint" style="margin-top:8px">Gemini is the easy default and the only option that can watch
           video directly. OpenRouter lets you pick any text model, but has no large-file upload and can't
           do video analysis here.</p>
+      </div>
+
+      <div>
+        <label>AI speed vs. quality</label>
+        <div class="providerrow">
+          <label class="radiopill"><input type="radio" name="aiThinking" value="on" checked>Best quality <span class="pilltag">thinking</span></label>
+          <label class="radiopill"><input type="radio" name="aiThinking" value="off">Fastest</label>
+        </div>
+        <p class="hint" style="margin-top:8px">"Best quality" lets Gemini think before answering — better
+          results, slower. "Fastest" skips thinking. Gemini only (OpenRouter models decide for themselves);
+          transcription always skips thinking. Saves instantly and applies across RECALL, HOOKLAB, and
+          BLAST on this device.</p>
       </div>
 
       <div id="geminiFields">
