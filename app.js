@@ -729,8 +729,19 @@ function renderPlatformSection(post, wrap) {
     card.querySelector(".copyopenbtn").addEventListener("click", function () {
       var text = captionFor(p, pcaption);
       if (!text) { toast("Write a caption first"); return; }
-      copyText(text).then(function () {
-        toast("Copied — opening " + p.name);
+      // Pinterest's pin builder wants a title first, and the clipboard only
+      // holds one thing — so hand over the title, which is the field you can't
+      // proceed without. The description is one tab away on the Copy caption
+      // button. Without a title we still copy the description rather than
+      // stranding the flow, and the toast says which one you got.
+      var clip = text, note = "Copied — opening " + p.name;
+      if (isPin) {
+        var pinTitle = ((ptitle ? ptitle.value : platformTitles[p.name]) || "").trim();
+        if (pinTitle) { clip = pinTitle; note = "Pin title copied — opening Pinterest"; }
+        else note = "No Pin title yet — copied the description instead";
+      }
+      copyText(clip).then(function () {
+        toast(note);
       }).catch(function () {
         toast("Couldn't copy — caption's still in the box");
       });
