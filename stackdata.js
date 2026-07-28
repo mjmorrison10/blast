@@ -53,7 +53,12 @@
     "hooklab_theme", "blast-theme", "pulse-theme", // device themes
     "stack_models_cache_v1", // 24h model-list cache
     "blast_handoff_v1",      // transient consumed inbox
-    "blast_queue_v1",        // transient batch inbox (device-local posting flow)
+    // blast_session_v1 is a PROJECTION of the queue's Quick clip, re-stamped
+    // with a fresh updatedAt on any keystroke. Syncing it let a device sitting
+    // on an old clip win a newest-wins merge and overwrite real work
+    // everywhere. The queue (blast_queue_v1) is the source of truth and syncs
+    // instead; each device rebuilds its own projection from it.
+    "blast_session_v1",
     "recall_state_v2"        // legacy LS library fallback (library syncs via recallLibrary)
   ];
   // Excluded from EVERY export, including local file backups (device-specific
@@ -358,11 +363,41 @@
       out["hooklab_state_v1"] = JSON.stringify(hMerged);
     }
 
-    // ---- BLAST session (single workspace; greater updatedAt wins) ----
-    var sA = pj(aLS["blast_session_v1"], null), sB = pj(bLS["blast_session_v1"], null);
-    if (sA || sB) {
-      var ua = (sA && sA.updatedAt) || -1, ub = (sB && sB.updatedAt) || -1;
-      out["blast_session_v1"] = JSON.stringify(ua >= ub ? (sA || sB) : (sB || sA));
+    // ---- BLAST queue (the clips + their posting state; per-clip newest wins) ----
+    // Union by clip key, not whole-blob newest-wins: marking clips posted on
+    // the phone must not delete a clip only the laptop has. Same tombstone
+    // rule as everywhere else — a delete sticks while it is newer than the
+    // item it removed, so re-queuing the clip later brings it back.
+    var qA = pj(aLS["blast_queue_v1"], null), qB = pj(bLS["blast_queue_v1"], null);
+    if (qA || qB) {
+      var qNewer = aNew ? (qA || qB) : (qB || qA), qOlder = aNew ? (qB || qA) : (qA || qB);
+      var clipAt = function (c) { return (c && (c.updatedAt || c.createdAt)) || 0; };
+      var cmap = {}, corder = [];
+      function addClips(arr) {
+        (arr || []).forEach(function (c) {
+          if (!c || c.key == null) return;
+          var tk = "blastClip:" + c.key;
+          if (tomb.hasOwnProperty(tk) && tomb[tk] > clipAt(c)) return;
+          if (!cmap[c.key]) { cmap[c.key] = c; corder.push(c.key); }
+          else if (clipAt(c) >= clipAt(cmap[c.key])) cmap[c.key] = c;
+        });
+      }
+      // Newer side first so ties resolve to it, matching mergeById.
+      addClips((qNewer && qNewer.clips) || []); addClips((qOlder && qOlder.clips) || []);
+      var clipsOut = corder.map(function (k) { return cmap[k]; }).filter(Boolean);
+      // Stable, reproducible order: the Quick clip first, then oldest-created
+      // first (the order clips were queued). Idempotent across re-merges.
+      clipsOut.sort(function (x, y) {
+        if ((x.key === "quick") !== (y.key === "quick")) return x.key === "quick" ? -1 : 1;
+        return (x.createdAt || 0) - (y.createdAt || 0);
+      });
+      out["blast_queue_v1"] = JSON.stringify({
+        v: 1,
+        updatedAt: Math.max((qA && qA.updatedAt) || 0, (qB && qB.updatedAt) || 0),
+        defaultPlatforms: (qNewer && qNewer.defaultPlatforms) || (qOlder && qOlder.defaultPlatforms) || null,
+        batchCount: (qNewer && qNewer.batchCount) || (qOlder && qOlder.batchCount) || 1,
+        clips: clipsOut,
+      });
     }
 
     // ---- BLAST presets (per-platform-key union) ----
@@ -379,7 +414,7 @@
     if (Object.keys(tomb).length) { var tombSorted = {}; Object.keys(tomb).sort().forEach(function (k) { tombSorted[k] = tomb[k]; }); out[LS_TOMBSTONES] = JSON.stringify(tombSorted); }
 
     // ---- unknown / future stack-prefixed keys (forward-compatible) ----
-    var HANDLED = { "recall_topclips_v1": 1, "pulse_posts_v1": 1, "hooklab_state_v1": 1, "blast_session_v1": 1, "blast_presets_v1": 1 };
+    var HANDLED = { "recall_topclips_v1": 1, "pulse_posts_v1": 1, "hooklab_state_v1": 1, "blast_queue_v1": 1, "blast_presets_v1": 1 };
     HANDLED[LS_WORKSPACE] = 1; HANDLED[LS_TOMBSTONES] = 1;
     var excl = {}; SYNC_EXCLUDE.concat(ALWAYS_EXCLUDE).forEach(function (k) { excl[k] = 1; });
     var allKeys = {}, uk;
