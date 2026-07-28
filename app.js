@@ -379,6 +379,14 @@ function loadPosts() {
 // One-way migration: an in-flight single-clip session becomes the Quick post,
 // so upgrading mid-session loses nothing.
 function migrateSessionIntoQuick(quick) {
+  // Legacy upgrade ONLY. This used to run on every load, which turned the
+  // session key into a back door: a stale session arriving from another
+  // device (or left over locally) got absorbed into the Quick card and
+  // replaced current work. Once a queue exists on this device, the queue is
+  // the truth and the session is just its projection.
+  var hasQueue = false;
+  try { hasQueue = localStorage.getItem(LS_QUEUE) != null; } catch (e) {}
+  if (hasQueue) return;
   var s = null;
   try { s = JSON.parse(localStorage.getItem(LS_SESSION)); } catch (e) {}
   if (!s) return;
@@ -433,23 +441,43 @@ function syncQuickInputs() {
 }
 function saveSession() {
   syncQuickInputs();
+  // Every call site here is a user mutation of the active clip — including
+  // marking a platform posted or skipped, which used to leave updatedAt
+  // untouched. Without this bump, a merge can't tell that an afternoon of
+  // posting is newer than a stale clip on another device.
+  var act = activePost();
+  if (act) act.updatedAt = Date.now();
   savePosts();
   // blast_session_v1 stays the Quick post's projection: PULSE and the rest of
   // the stack read that shape, so it must keep working exactly as before.
   if (activeKey !== "quick") return;
+  writeSessionProjection();
+}
+// One-way: queue's Quick clip -> blast_session_v1. The projection is derived
+// state (it no longer syncs), so it is rewritten from the clip rather than
+// trusted — including right after a Drive sync, so PULSE on this device reads
+// current work even if BLAST is never typed in again.
+function writeSessionProjection() {
+  var quick = quickPost();
+  if (!quick) return;
+  var tr = document.querySelector("#transcript");
+  var transcript = tr ? tr.value : null;
+  if (transcript == null) {
+    try { transcript = (JSON.parse(localStorage.getItem(LS_SESSION)) || {}).transcript || ""; } catch (e) { transcript = ""; }
+  }
   try {
     localStorage.setItem(LS_SESSION, JSON.stringify({
-      base: (document.querySelector("#caption") || {}).value || "",
-      videoHook: (document.querySelector("#videohook") || {}).value || "",
-      transcript: (document.querySelector("#transcript") || {}).value || "",
-      captions: platformCaptions,
-      titles: platformTitles,
-      suggestions: platformSuggestions,
-      picked: platformPickedIdx,
-      status: platformStatus,
-      postUrl: platformPostUrl,
-      postedAt: platformPostedAt,
-      postedCaption: platformPostedCaption,
+      base: quick.text || "",
+      videoHook: quick.hookText || "",
+      transcript: transcript,
+      captions: quick.captions || {},
+      titles: quick.titles || {},
+      suggestions: quick.suggestions || {},
+      picked: quick.picked || {},
+      status: quick.status || {},
+      postUrl: quick.postUrl || {},
+      postedAt: quick.postedAt || {},
+      postedCaption: quick.postedCaption || {},
       updatedAt: Date.now(),
     }));
   } catch (e) { /* quota — non-fatal, session just won't persist */ }
@@ -469,6 +497,10 @@ function loadSession() {
     var t = ""; try { t = (JSON.parse(localStorage.getItem(LS_SESSION)) || {}).transcript || ""; } catch (e) {}
     tr.value = t;
   }
+  // Rebuild the projection from the clip we just loaded, so a session left
+  // behind by an older build (or a device that synced while BLAST was closed)
+  // can never be what PULSE imports.
+  writeSessionProjection();
 }
 // Resets the Quick post only — a queued batch is the user's work, not session
 // scratch, and is cleared per-clip from its card instead.
@@ -835,6 +867,9 @@ function renderQueue() {
     });
     el.querySelector(".clipdrop").addEventListener("click", function () {
       if (!confirm("Remove this clip from the batch? Captions for it are lost.")) return;
+      // The queue syncs now, so a delete needs a tombstone or the next merge
+      // with a device that still has the clip brings it straight back.
+      if (window.StackData && window.StackData.tombstone) window.StackData.tombstone("blastClip", key);
       posts = posts.filter(function (p) { return p.key !== key; });
       delete expandedKeys[key];
       if (activeKey === key) bindPost(quickPost());
@@ -1741,6 +1776,10 @@ $("#suggestBtn").addEventListener("click", async function () {
         delete platformPickedIdx[p.name];
       }
     });
+    // New captions for a new clip mean the previous clip's posting run is
+    // over. Leaving the old marks behind made the grid claim platforms were
+    // already posted for a clip that had never been posted anywhere.
+    startFreshPostingSession();
     renderPlatforms();
     saveSession();
     if (results.__partial) {
@@ -1760,6 +1799,31 @@ $("#suggestBtn").addEventListener("click", async function () {
     btn.textContent = "Suggest captions →";
   }
 });
+
+// Clear the active clip's posting state so a new set of captions starts from
+// "Not started" everywhere. Marks that say a platform was actually POSTED are
+// real records, so those get a confirm first (a re-run for better captions
+// mid-session must not erase them); anything softer clears silently.
+function startFreshPostingSession() {
+  var names = Object.keys(platformStatus || {});
+  var carried = names.filter(function (n) { return platformStatus[n] && platformStatus[n] !== "none"; });
+  if (!carried.length) return false;
+  var posted = names.filter(function (n) { return platformStatus[n] === "posted"; });
+  if (posted.length) {
+    var ok = confirm("Start a fresh posting session?\n\n" + posted.length + " platform" +
+      (posted.length > 1 ? "s are" : " is") + " still marked posted from the previous clip. " +
+      "Import them into PULSE first if you haven't.\n\nCancel keeps the existing marks.");
+    if (!ok) return false;
+  }
+  var post = activePost();
+  names.forEach(function (n) { delete platformStatus[n]; });
+  [platformPostUrl, platformPostedAt, platformPostedCaption].forEach(function (map) {
+    Object.keys(map || {}).forEach(function (n) { delete map[n]; });
+  });
+  if (post) post.updatedAt = Date.now();
+  toast("Fresh posting session — previous clip's posted/skipped marks cleared", 5000);
+  return true;
+}
 
 // Persist the transcript as the user types; refresh the HOOKLAB status when they
 // return to the field (they may have logged winners in another tab meanwhile).
@@ -1983,6 +2047,9 @@ $("#reformatBtn").addEventListener("click", async function () {
     var n = queueClips().length;
     if (!n) return;
     if (!confirm("Clear all " + n + " queued clips? Their captions are lost.")) return;
+    if (window.StackData && window.StackData.tombstone) {
+      posts.forEach(function (p) { if (p.key !== "quick") window.StackData.tombstone("blastClip", p.key); });
+    }
     posts = posts.filter(function (p) { return p.key === "quick"; });
     expandedKeys = Object.create(null);
     bindPost(quickPost());
