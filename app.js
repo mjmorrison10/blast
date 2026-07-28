@@ -324,6 +324,10 @@ function blankPost(key, extra) {
   var p = {
     key: key, srcId: "", srcTitle: "", t: "", sec: 0,
     text: "", hookText: "", label: "", platforms: null,
+    // RECALL stamps these when it knows the matched pattern. BLAST only carries
+    // them; PULSE reads them so an auto-promoted ledger entry can name its
+    // pattern family instead of landing in "unknown".
+    patternId: "", patternName: "", patternFamily: "",
     captions: {}, titles: {}, suggestions: {}, picked: {},
     status: {}, postUrl: {}, postedAt: {}, postedCaption: {},
     genState: "pending", genError: "",
@@ -1742,6 +1746,45 @@ async function suggestCaptionsFromVideo(file, mode, count, evidenceBlock, contex
   return suggestCaptionsFromText(transcript, count, evidenceBlock, contextBlk, onPhase);
 }
 
+// The spoken opening line IS the hook — that is what the word means. Clips from
+// RECALL arrive with one; a Quick clip (transcript pasted straight in here) had
+// none, so PULSE fell back to the caption's first line and the HOOKLAB ledger
+// ended up storing captions where hooks belong.
+//
+// Take whole sentences until there are enough words to be a real opening, and
+// stop early rather than run long: 3 sentences or 200 characters, whichever
+// comes first. Deterministic — no AI call, no new failure mode.
+var HOOK_MIN_WORDS = 12, HOOK_MAX_SENTENCES = 3, HOOK_MAX_CHARS = 200;
+function openingHook(text) {
+  var clean = String(text || "").replace(/\s+/g, " ").trim();
+  if (!clean) return "";
+  var parts = clean.match(/[^.!?]+[.!?]*/g) || [clean];
+  var out = "", words = 0;
+  for (var i = 0; i < parts.length && i < HOOK_MAX_SENTENCES; i++) {
+    var next = (out ? out + " " : "") + parts[i].trim();
+    if (out && next.length > HOOK_MAX_CHARS) break;
+    out = next;
+    words = out.split(/\s+/).filter(Boolean).length;
+    if (words >= HOOK_MIN_WORDS) break;
+  }
+  return out.length > HOOK_MAX_CHARS ? out.slice(0, HOOK_MAX_CHARS).replace(/\s+\S*$/, "") : out;
+}
+// Fills the visible Video hook input so the user sees it and can correct it —
+// never a hidden field, and never over the top of something they already typed.
+function seedQuickHook(transcriptText) {
+  if (activeKey !== "quick") return false;
+  var quick = quickPost();
+  var vh = document.querySelector("#videohook");
+  if (!quick || !vh) return false;
+  if ((vh.value || "").trim() || (quick.hookText || "").trim()) return false;
+  var h = openingHook(transcriptText);
+  if (!h) return false;
+  vh.value = h;
+  quick.hookText = h;
+  saveSession();
+  return true;
+}
+
 $("#suggestBtn").addEventListener("click", async function () {
   var transcriptEl = $("#transcript");
   var transcriptText = (transcriptEl && transcriptEl.value || "").trim();
@@ -1751,6 +1794,7 @@ $("#suggestBtn").addEventListener("click", async function () {
     toast("Paste a transcript above, or upload a clip in the 9:16 section below");
     return;
   }
+  var seededHook = transcriptText ? seedQuickHook(transcriptText) : false;
   var countInput = document.querySelector('input[name="suggestCount"]:checked');
   var count = parseInt(countInput ? countInput.value : "3", 10);
   var ev = loadHooklabEvidence();
@@ -1799,6 +1843,7 @@ $("#suggestBtn").addEventListener("click", async function () {
     } else {
       var extra = ev.winners.length ? " (leaning on " + ev.winners.length + " HOOKLAB winner" + (ev.winners.length > 1 ? "s" : "") + ")" : "";
       toast("Caption suggestions ready — pick one per platform" + extra);
+      if (seededHook) toast("Video hook filled in from your transcript — edit it if the opening line is different", 6000);
     }
   } catch (err) {
     console.error(err);
